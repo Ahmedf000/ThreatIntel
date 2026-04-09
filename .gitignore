@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .idea/
 .env
+log.txt
+log1.txt
+res.txt
+test.py
