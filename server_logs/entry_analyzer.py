@@ -11,6 +11,10 @@ import sys
 import json
 
 
+from server_logs.SQL_injection_func import SQLi_decode_cond, SQLi_patterns
+
+
+
 
 def webserver_logs(file):
     """webserver logs have different format - gonn start with apache based on user picks :)"""
@@ -56,6 +60,16 @@ def webserver_logs(file):
                     - detect PUT-DELETE requests
                     - Most requested URL information - directory traversal
                     """
+                    if match_lines_logs.group(3):
+                        """Working with http method attack patterns"""
+                        print(Colors.yellow(f"[*] Analyzing HTTP REQUEST Attack Patterns if any...."))
+                        print(Colors.yellow(f"[*] Checking for SQL Injection patterns...."))
+                        sqli_patterns = SQLi_patterns(match_lines_logs.group(3))
+
+                        move_to_next = input("Enter to move to next pattern")
+                        print(move_to_next)
+
+                        print(Colors.yellow(f"[*] Checking for Command injection patterns...."))
 
 
 
