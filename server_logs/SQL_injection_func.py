@@ -153,7 +153,7 @@ def SQLi_patterns(param):
         for technique, matched in hits:
             print(Colors.red(f"[!] DETECTED: {tech} — matched: '{matched}'"))
     else:
-        print("[✓] Clean")
+        print(Colors.green("[✓] Clean"))
 
     return hits
 
