@@ -249,57 +249,55 @@ def email_header(file):
 
                     run_the_request = request_reputation(f"https://{strip_at_from_domain_2}")
                     url_ = run_the_request['url']
-                    if run_the_request['Undetected'] > 0 and run_the_request['harmless'] > 0 and run_the_request[
-                        'suspicious'] == 0 and run_the_request['malicious'] == 0:
-                        print(Colors.green(f"""[+] {url_} is considered safe with {str({run_the_request['Undetected']})}
-                                           {str({run_the_request['harmless']})} rating.
-                                           """))
-                        scoring_system += 10
-                        print(Colors.green(f"Score is up to {scoring_system}."))
+                    if run_the_request:
 
-                    elif run_the_request['suspicious'] > 0:
-                        print(Colors.orange(f"""[+] {url_} have been flagged as suspicious with count
-                                        {str(run_the_request['suspicious'])} rating.
-                                        """))
-                        scoring_system -= 15
-                        print(Colors.red(f"Score is down to {scoring_system}."))
+                        url_ = run_the_request['url']
 
-                    elif run_the_request['malicious'] > 0:
-                        print(Colors.red(f"""[+] {url_} have been flagged as malicious with count
-                                         {str(run_the_request['suspicious'])} rating.
-                                          """))
-                        scoring_system -= 30
-                        print(Colors.red(f"Score is down to {scoring_system}."))
+                        if url_.startswith("http://") and not url_.startswith("https://"):
+                            print(Colors.orange(
+                                f"[!] Warning: {url_} only responds on HTTP — no HTTPS/SSL certificate detected"))
+                            print(Colors.orange(f"    Legitimate sites almost always serve HTTPS. Phishing indicator!"))
+                            scoring_system -= 10
 
+                        m = run_the_request['malicious']
+                        s = run_the_request['suspicious']
+                        h = run_the_request['harmless']
+                        u = run_the_request['Undetected']
 
-                    elif run_the_request['malicious'] > 0 and run_the_request['suspicious'] > 0:
-                        print(Colors.red(f"""[+] {url_} have been flagged as suspicious and malicious with count
-                                        {str(run_the_request['suspicious'])} and {str(run_the_request['malicious'])} rating.
-                                        """))
-                        scoring_system -= 50
-                        print(Colors.red(f"Score is down to {scoring_system}."))
+                        if m > 0 and s > 0:
+                            print(Colors.red(f"[!] {url_} flagged as MALICIOUS ({m}) and SUSPICIOUS ({s})"))
+                            scoring_system -= 50
+                        elif m > 0:
+                            print(Colors.red(f"[!] {url_} flagged as MALICIOUS — {m} detections"))
+                            scoring_system -= 30
+                        elif s > 0:
+                            print(Colors.orange(f"[!] {url_} flagged as SUSPICIOUS — {s} flags"))
+                            scoring_system -= 15
+                        else:
+                            print(Colors.green(f"[+] {url_} looks clean — Harmless: {h} | Undetected: {u}"))
+                            scoring_system += 10
 
         print(f"Final Score is: {scoring_system}")
-        if scoring_system > 50:
-            print(Colors.cyan(f"Good indicator as Final Score system is above 50"))
-        if scoring_system < 50:
-            print(Colors.orange(f"Not great indicator as Final Score system is below 50"))
-        if scoring_system > 90:
-            print(Colors.green(f"Amazing indicator as Final Score system is above 90"))
-        if scoring_system > 30:
-            print(Colors.red(f"Pretty bad indicator as Final Score system is below 30...."))
+        if scoring_system >= 90:
+            print(Colors.green(f"[+] Amazing! Final Score: {scoring_system} — Strong legitimacy indicators"))
+        elif scoring_system >= 50:
+            print(Colors.cyan(f"[+] Good. Final Score: {scoring_system} — Mostly legitimate"))
+        elif scoring_system >= 30:
+            print(Colors.orange(f"[!] Weak. Final Score: {scoring_system} — Some suspicious indicators"))
+        else:
+            print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
 
 
         if suggest_further_request == 'no':
             print(Colors.yellow(f"[*] Finishing up with scoring system! to {scoring_system}"))
-            if scoring_system > 50:
-                print(Colors.cyan(f"Good indicator as Final Score system is above 50"))
-            if scoring_system < 50:
-                print(Colors.orange(f"Not great indicator as Final Score system is below 50"))
-            if scoring_system > 90:
-                print(Colors.green(f"Amazing indicator as Final Score system is above 90"))
-            if scoring_system > 30:
-                print(Colors.red(f"Pretty bad indicator as Final Score system is below 30...."))
+            if scoring_system >= 90:
+                print(Colors.green(f"[+] Amazing! Final Score: {scoring_system} — Strong legitimacy indicators"))
+            elif scoring_system >= 50:
+                print(Colors.cyan(f"[+] Good. Final Score: {scoring_system} — Mostly legitimate"))
+            elif scoring_system >= 30:
+                print(Colors.orange(f"[!] Weak. Final Score: {scoring_system} — Some suspicious indicators"))
+            else:
+                print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
 
 
 

@@ -93,7 +93,7 @@ def webserver_logs(file):
 
                 extracted_all = []
                 for g in get_most:
-                    get_thefull_log = re.findall(f"{g}.*?", content)
+                    get_thefull_log = re.findall(rf"^{re.escape(g[0])}.*", content, re.MULTILINE)
 
                     for get_full in get_thefull_log:
                         get_time_fromip = re.match(pattern_logs, get_full).group(2)

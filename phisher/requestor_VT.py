@@ -17,37 +17,51 @@ if not API_KEY:
 
 def request_reputation(domain):
     """Adjustment taken from VIRUS TOTAL WEBSITE"""
-    url = f"https://www.virustotal.com/api/v3/urls"
 
-    HEADERS = {
-        'accept': 'application/json',
-        'x-apikey': API_KEY,
-        'content-type': 'application/x-www-form-urlencoded',
-    }
-    res = requests.post(url,
-                        headers=HEADERS,
-                        data={"url": domain})
+    clean_domain = domain.replace("https://", "").replace("http://", "").strip("/")
 
-    if res.status_code != 200:
-        print(f"Issue within POST request: {res.status_code}")
-        return None
+    for scheme in ["http", "https"]:
+        url_to_check = f"{scheme}://{clean_domain}"
+        print(Colors.yellow(f"[*] Trying {url_to_check}..."))
 
-    analysis_id = res.json()['data']['id']
-    print(Colors.yellow(f"[*] Analysis ID Submitted: {analysis_id}"))
+        url = f"https://www.virustotal.com/api/v3/urls"
 
-    #get method
-    analysis_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
-    analysis_response = requests.get(analysis_url, headers={'accept': 'application/json', 'x-apikey': API_KEY})
-    if analysis_response.status_code != 200:
-        print(f"Issue within GET request: {analysis_response.status_code}")
-        return None
+        HEADERS = {
+            'accept': 'application/json',
+            'x-apikey': API_KEY,
+            'content-type': 'application/x-www-form-urlencoded',
+        }
+        res = requests.post(url,
+                            headers=HEADERS,
+                            data={"url": url_to_check})
 
-    scanned_url = {
-        'url': analysis_response.json()['data']['attributes']['url'] if analysis_response.json()['data']['attributes']['url'] else "N/A",
-        'Undetected': analysis_response.json()['data']['attributes']['stats']['undetected'] if analysis_response.json()['data']['attributes']['stats']['undetected'] else "N/A",
-        'harmless': analysis_response.json()['data']['attributes']['stats']['harmless'] if analysis_response.json()['data']['attributes']['stats']['harmless'] else "N/A",
-        'suspicious': analysis_response.json()['data']['attributes']['stats']['suspicious'],
-        'malicious': analysis_response.json()['data']['attributes']['stats']['malicious']
-    }
+        if res.status_code != 200:
+            if scheme == "https":
+                print(Colors.orange(f"[!] HTTPS failed — site may not have SSL certificate"))
+            continue
 
-    return scanned_url #gave "url": "http://github.com/", not https...
+        analysis_id = res.json()['data']['id']
+        print(Colors.yellow(f"[*] Analysis ID Submitted: {analysis_id}"))
+
+        analysis_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+        analysis_response = requests.get(
+            analysis_url,
+            headers={'accept': 'application/json', 'x-apikey': API_KEY}
+        )
+
+        if analysis_response.status_code != 200:
+            continue
+
+        attrs = analysis_response.json()['data']['attributes']
+        return {
+            'url': url_to_check,  # use what WE sent, not what VT normalizes back
+            'Undetected': attrs['stats']['undetected'],
+            'harmless': attrs['stats']['harmless'],
+            'suspicious': attrs['stats']['suspicious'],
+            'malicious': attrs['stats']['malicious']
+        }
+
+    print(Colors.red(f"[!] Both https and http failed for {clean_domain}"))
+    return None
+
+
