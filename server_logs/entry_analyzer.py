@@ -15,18 +15,17 @@ import json
 
 from server_logs.SQL_injection_func import SQLi_decode_cond, SQLi_patterns
 from server_logs.cmd_injection_func import command_Injection_patterns, decode_encode
-
-
+from phisher.requestor_VT import request_reputation
 
 
 def webserver_logs(file):
     """webserver logs have different format - gonn start with apache based on user picks :)"""
     """Take note that apache has 2 log file - access and error logs"""
-    choices_menu = """
+    print("""
     1- Apache Logs
     2- Nginx Logs
     3- IIS Logs
-    """ #Menu choice
+    """) #Menu choice
     webserver_choice = input(Colors.yellow(f"[*] Please choose The webserver you are working with:   ")).lower()
     if webserver_choice == str(1):
         file_apache_choice = input(Colors.yellow(f"[*] Please choose to work with Access(1) or Error Logs(2):   ")).lower()
@@ -49,7 +48,7 @@ def webserver_logs(file):
 
             with open('access.log', 'r') as f:
                 content = f.read()
-                pattern_logs = """^(\\S+) - - \\[(.*?)\\] "(\\S+ \\S+ \\S+)" (\\d+) (\\d+) "(.*?)" "(.*?)\"""" #() are capturing groups.
+                pattern_logs =  r'^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"' #() are capturing groups.
                 match_lines_logs = re.match(pattern_logs, content)
                 if match_lines_logs:
                     """ 
@@ -71,13 +70,13 @@ def webserver_logs(file):
                         print(Colors.yellow(f"[*] Checking for SQL Injection patterns...."))
                         sqli_patterns = SQLi_decode_cond(match_lines_logs.group(2))
 
-                        move_to_next = input("Enter to move to next pattern ?")
+                        move_to_next = input("Press Enter to move to next pattern ?")
                         print(move_to_next)
 
                         print(Colors.yellow(f"[*] Checking for Command injection patterns...."))
                         command_injection_patterns = decode_encode(match_lines_logs.group(2))
 
-                        move_to_next = input("Enter to move to next pattern ?")
+                        move_to_next = input("Press Enter to move to next pattern ?")
                         print(move_to_next)
 
                 """get MOST repeated IP"""
@@ -199,14 +198,15 @@ def webserver_logs(file):
                         get_back_content.append(c)
                     count = 0
                     for g in get_most:
+                        ip_add = g[0]
                         for get in get_back_content:
                             """^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"""
                             # SAMPLE TO LOOK AT
-                            match_all_specifically_day1 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[0]})', get)
-                            match_all_specifically_day2 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[1]})', get)
-                            match_all_specifically_day3 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[2]})', get)
-                            match_all_specifically_day4 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[3]})', get)
-                            match_all_specifically_day5 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[4]})', get)
+                            match_all_specifically_day1 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[0]))})', get)
+                            match_all_specifically_day2 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[1]))})', get)
+                            match_all_specifically_day3 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[2]))})', get)
+                            match_all_specifically_day4 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[3]))})', get)
+                            match_all_specifically_day5 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[4]))})', get)
                             """FIVE TIMES"""
                             if match_all_specifically_day1:
                                 print(Colors.cyan(f"""[+] {g[count]} Appears to be in the 1st most busy day from 
@@ -225,7 +225,7 @@ def webserver_logs(file):
                                                                 {change_month} - Which Busy Month from the Logs...."""))
 
 
-                            count += 1
+                        count += 1
 
                 ask_checking_ip_from_attacks = input(Colors.green(f"""[*] Do you want to check any of the IPS in the attack"
                                                                   pattern logs:         (yes/no)""")).lower()
@@ -233,9 +233,21 @@ def webserver_logs(file):
 
 
                 if ask_checking_ip_from_attacks == 'yes':
-                    pass
+                    print(Colors.yellow(f"[*] Running VirusTotal lookup on top IPs..."))
+                    for ip, count in get_most:
+                        print(Colors.cyan(f"\n[*] Querying: {ip}"))
+                        result = request_reputation(f"https://{ip}")  # or just ip — VT accepts IPs too
+                        if result:
+                            if result['malicious'] > 0:
+                                print(Colors.red(f"  [!] MALICIOUS — {result['malicious']} detections"))
+                            elif result['suspicious'] > 0:
+                                print(Colors.orange(f"  [!] SUSPICIOUS — {result['suspicious']} flags"))
+                            else:
+                                print(Colors.green(
+                                    f"  [+] Clean — Harmless: {result['harmless']} | Undetected: {result['Undetected']}"))
+
                 if ask_checking_ip_from_attacks == 'no':
-                    pass
+                    print(Colors.yellow("[*] Skipping IP reputation check."))
 
 
 

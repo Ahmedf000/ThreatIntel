@@ -225,9 +225,9 @@ def email_header(file):
                     print(Colors.red("[!] SPF Signature not found...."))
                     print(Colors.red(f"Score is down to {scoring_system}."))
 
-        suggest_further_request = input(Colors.yellow("Do you want to query Virus Total:    ")).lower()
+        suggest_further_request = input(Colors.yellow("Do you want to query Virus Total (yes / no):    ")).lower()
         print(suggest_further_request)
-        if suggest_further_request.lower() == 'yes':
+        if suggest_further_request == 'yes':
             print(Colors.yellow("[*] Extracting DKIM d= paramter and From Domain before..."))
             getdomains_ = re.compile(r'Authentication-Results:.*?(?=\n\S)', re.DOTALL)
             matchdomain = getdkim_.search(content).group()
@@ -247,7 +247,7 @@ def email_header(file):
                     {strip_at_from_domain}
                     """))
 
-                    run_the_request = request_reputation(strip_at_from_domain_2)
+                    run_the_request = request_reputation(f"https://{strip_at_from_domain_2}")
                     url_ = run_the_request['url']
                     if run_the_request['Undetected'] > 0 and run_the_request['harmless'] > 0 and run_the_request[
                         'suspicious'] == 0 and run_the_request['malicious'] == 0:
@@ -281,13 +281,26 @@ def email_header(file):
 
         print(f"Final Score is: {scoring_system}")
         if scoring_system > 50:
-            print(f"Good indicator as Final Score system is above 50")
+            print(Colors.cyan(f"Good indicator as Final Score system is above 50"))
         if scoring_system < 50:
-            print(f"Not great indicator as Final Score system is below 50")
+            print(Colors.orange(f"Not great indicator as Final Score system is below 50"))
         if scoring_system > 90:
-            print(f"Amazing indicator as Final Score system is above 90")
+            print(Colors.green(f"Amazing indicator as Final Score system is above 90"))
         if scoring_system > 30:
-            print(f"Pretty bad indicator as Final Score system is below 30....")
+            print(Colors.red(f"Pretty bad indicator as Final Score system is below 30...."))
+
+
+        if suggest_further_request == 'no':
+            print(Colors.yellow(f"[*] Finishing up with scoring system! to {scoring_system}"))
+            if scoring_system > 50:
+                print(Colors.cyan(f"Good indicator as Final Score system is above 50"))
+            if scoring_system < 50:
+                print(Colors.orange(f"Not great indicator as Final Score system is below 50"))
+            if scoring_system > 90:
+                print(Colors.green(f"Amazing indicator as Final Score system is above 90"))
+            if scoring_system > 30:
+                print(Colors.red(f"Pretty bad indicator as Final Score system is below 30...."))
+
 
 
 

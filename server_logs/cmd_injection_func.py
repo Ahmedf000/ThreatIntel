@@ -194,8 +194,8 @@ def command_Injection_patterns(param):
     if hits:
         for tech, matched in hits:
             print(Colors.red(f"[!] DETECTED: {tech} — matched: '{matched}'"))
-        else:
-            print(Colors.green("[✓] Clean"))
+    else:
+        print(Colors.green("[✓] Clean"))
 
     return hits
 
