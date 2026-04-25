@@ -170,5 +170,5 @@ def SQLi_decode_cond(params):
 
 
     else:
-        print("[*] Already decoded, Perfoming pattern matching")
+        print("[*] The Logs Already decoded and readable, Perfoming pattern matching")
         analyse_pattern = SQLi_patterns(params)

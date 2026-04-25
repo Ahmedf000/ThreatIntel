@@ -14,6 +14,7 @@ import json
 
 
 from server_logs.SQL_injection_func import SQLi_decode_cond, SQLi_patterns
+from server_logs.cmd_injection_func import command_Injection_patterns, decode_encode
 
 
 
@@ -48,7 +49,7 @@ def webserver_logs(file):
 
             with open('access.log', 'r') as f:
                 content = f.read()
-                pattern_logs = r'^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"' #() are capturing groups.
+                pattern_logs = """^(\\S+) - - \\[(.*?)\\] "(\\S+ \\S+ \\S+)" (\\d+) (\\d+) "(.*?)" "(.*?)\"""" #() are capturing groups.
                 match_lines_logs = re.match(pattern_logs, content)
                 if match_lines_logs:
                     """ 
@@ -64,16 +65,20 @@ def webserver_logs(file):
                     """
 
 
-                    if match_lines_logs.group(3):
+                    if match_lines_logs.group(2):
                         """Working with http method attack patterns"""
                         print(Colors.yellow(f"[*] Analyzing HTTP REQUEST Attack Patterns if any...."))
                         print(Colors.yellow(f"[*] Checking for SQL Injection patterns...."))
-                        sqli_patterns = SQLi_decode_cond(match_lines_logs.group(3))
+                        sqli_patterns = SQLi_decode_cond(match_lines_logs.group(2))
 
-                        move_to_next = input("Enter to move to next pattern")
+                        move_to_next = input("Enter to move to next pattern ?")
                         print(move_to_next)
 
                         print(Colors.yellow(f"[*] Checking for Command injection patterns...."))
+                        command_injection_patterns = decode_encode(match_lines_logs.group(2))
+
+                        move_to_next = input("Enter to move to next pattern ?")
+                        print(move_to_next)
 
                 """get MOST repeated IP"""
                 ips = []
@@ -88,11 +93,13 @@ def webserver_logs(file):
 
 
                 extracted_all = []
-                get_thefull_log = re.findall(f"{get_most}.*?", content)
-                for get_full in get_thefull_log:
-                    get_time_fromip = re.match(pattern_logs, get_full).group(2)
-                    strip_off_time = re.findall(f"\d\d/\w\w\w/\d\d\d\d:\d\d:\d\d:\d\d", get_time_fromip)
-                    extracted_all.append(get_time_fromip)
+                for g in get_most:
+                    get_thefull_log = re.findall(f"{g}.*?", content)
+
+                    for get_full in get_thefull_log:
+                        get_time_fromip = re.match(pattern_logs, get_full).group(2)
+                        strip_off_time = re.findall(r"\d\d/\w\w\w/\d\d\d\d:\d\d:\d\d:\d\d", get_time_fromip)
+                        extracted_all.append(get_time_fromip)
 
                 """get working with the times frame for the most repeated IP"""
                 print(Colors.yellow(f"[*] Checking for suspicious short period requests that belong to {get_most} IP...."))
@@ -146,15 +153,100 @@ def webserver_logs(file):
                         full_date.append(first + ':' + second)
 
                     month_extractor = []
+                    day_extractor = []
                     for full in full_date:
                         match_it = re.match(r'^(\d{4})-(\d{2})-(\d{2})', full)
+                        match_it_2 = re.match(r'^(\d{4})-(\d{2})-(\d{2})', full)
                         if match_it:
                             month_extractor.append(match_it.groups(1))
+                        if match_it_2:
+                            day_extractor.append(match_it_2.groups(1) + ':' + match_it_2.groups(2))
 
+                    month_mapper = {
+                        '01': 'January', '02': 'February', '03': 'March', '04': 'April',
+                        '05': 'May', '06': 'June', '07': 'July', '08': 'August',
+                        '09': 'September', '10': 'October', '11': 'November', '12': 'December'
+                    }
+
+                    work_up_day = []
                     get_most_month = Counter(month_extractor).most_common(1)[0][0]
-                    for get in get_most_month:
-                        if get_most_month in full_date:
-                            pass
+                    change_month = month_extractor[get_most_month]
+                    print(Colors.green(f"[+] {change_month} Appears to be the most busy month...."))
+                    for d in day_extractor:
+                        if get_most_month in d:
+                            work_up_day.append(d)
+
+                    busy_day = []
+                    if work_up_day:
+                        for w in work_up_day:
+                            match_repeated_day = re.match(r'\d\d', w)
+                            if match_repeated_day:
+                                busy_day.append(w)
+                    match_most_busy_day = Counter(busy_day).most_common(5)
+                    print(Colors.green(f"""
+                        [+] Within Month: {change_month}
+                        The Three Most Busy Days appears to be in the Logs:
+                                {match_most_busy_day[0]} #1
+                                {match_most_busy_day[1]} #2
+                                {match_most_busy_day[2]} #3
+                                {match_most_busy_day[3]} #4
+                                {match_most_busy_day[4]} #5
+                    """))
+
+                    """rules for the most repeated IP"""
+                    get_back_content = []
+                    for c in content.splitlines():
+                        get_back_content.append(c)
+                    count = 0
+                    for g in get_most:
+                        for get in get_back_content:
+                            """^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"""
+                            # SAMPLE TO LOOK AT
+                            match_all_specifically_day1 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[0]})', get)
+                            match_all_specifically_day2 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[1]})', get)
+                            match_all_specifically_day3 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[2]})', get)
+                            match_all_specifically_day4 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[3]})', get)
+                            match_all_specifically_day5 = re.match(f'^({g[count]}) - - \[({match_most_busy_day[4]})', get)
+                            """FIVE TIMES"""
+                            if match_all_specifically_day1:
+                                print(Colors.cyan(f"""[+] {g[count]} Appears to be in the 1st most busy day from 
+                                                                {change_month} - Which Busy Month from the Logs...."""))
+                            if match_all_specifically_day2:
+                                print(Colors.cyan(f"""[+] {g[count]} Appears to be in the 2nd most busy day from 
+                                                                {change_month} - Which Busy Month from the Logs...."""))
+                            if match_all_specifically_day3:
+                                print(Colors.cyan(f"""[+] {g[count]} Appears to be in the 3rd most busy day from 
+                                                                {change_month} - Which Busy Month from the Logs...."""))
+                            if match_all_specifically_day4:
+                                print(Colors.cyan(f"""[+] {g[count]} Appears to be in the 4th most busy day from 
+                                                                {change_month} - Which Busy Month from the Logs...."""))
+                            if match_all_specifically_day5:
+                                print(Colors.cyan(f"""[+] {g[count]} Appears to be in the 5th most busy day from 
+                                                                {change_month} - Which Busy Month from the Logs...."""))
+
+
+                            count += 1
+
+                ask_checking_ip_from_attacks = input(Colors.green(f"""[*] Do you want to check any of the IPS in the attack"
+                                                                  pattern logs:         (yes/no)""")).lower()
+                print(ask_checking_ip_from_attacks)
+
+
+                if ask_checking_ip_from_attacks == 'yes':
+                    pass
+                if ask_checking_ip_from_attacks == 'no':
+                    pass
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -170,3 +262,7 @@ def webserver_logs(file):
     else:
         print(Colors.yellow(f"Unrecognized Choice: Check Menu\n {choices_menu}"))
         sys.exit(1)
+
+
+
+webserver_logs('access.log')
