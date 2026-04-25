@@ -20,7 +20,7 @@ def request_reputation(domain):
 
     clean_domain = domain.replace("https://", "").replace("http://", "").strip("/")
 
-    for scheme in ["http", "https"]:
+    for scheme in ["https", "http"]:
         url_to_check = f"{scheme}://{clean_domain}"
         print(Colors.yellow(f"[*] Trying {url_to_check}..."))
 
