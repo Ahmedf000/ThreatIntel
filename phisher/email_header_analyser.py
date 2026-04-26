@@ -1,3 +1,4 @@
+import zipfile
 from email.parser import Parser
 from email.policy import default
 
@@ -5,6 +6,9 @@ import os
 import subprocess
 import platform
 import re
+import email
+from email import policy, message_from_file
+from pathlib import Path
 
 import argparse
 
@@ -14,6 +18,59 @@ import json
 from phisher.requestor_VT import request_reputation
 from colors.color import Colors
 
+
+
+
+def attachement_analyzer(file):
+    """Analyze email attachments safely"""
+    if platform.system() == 'Windows':
+        cmd = subprocess.run(
+            ['powershell', '-NoProfile', '-Command', '(Get-LocalUser | select-object -first 1).tostring()'],
+                 capture_output=True,
+                 text=True).stdout.strip()
+        if os.getcwd() != f'C:\\Users\\{cmd}\\Desktop':
+            os.chdir(f'C:\\Users\\{cmd}\\Desktop')
+
+    if platform.system() == "Linux":
+        cmd = subprocess.run(
+            ['whoami'], capture_output=True, text=True
+        ).stdout.strip()
+        if os.getcwd() != f'/home/{cmd}/Desktop':
+            os.chdir(f'/home/{cmd}/Desktop')
+
+
+    with open(f'{file}.eml', "rb") as file:
+        msg = message_from_file(file, policy=policy.default)
+
+    attachments = []
+    if not msg.walk():
+        print("No attachments found")
+        return
+
+    pathcheck = Path('extracted_attachment')
+    pathcheck.mkdir(parents=True, exist_ok=True)
+
+    for part in msg.walk():
+        if part.get_content_maintype() == 'multipart':
+            continue
+        if part.get('Content-Disposition') is None:
+            continue
+
+        get_filename = part.get_filename()
+        if get_filename:
+            file_name = re.sub(r'[\\/*?:"<>|]', "", get_filename)
+            payload = part.get_payload(decode=True)
+            if payload:
+                attachments.append((get_filename, payload))
+
+
+        if attachments:
+            with zipfile.ZipFile(f"attachments.zip", 'w') as zipf:
+                for filename, data in attachments:
+                    zipf.writestr(filename, data)
+            print(f'Extracted {len(attachments)} files to attachments.zip')
+        else:
+            print('No attachments found')
 
 
 
@@ -299,6 +356,7 @@ def email_header(file):
             else:
                 print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
 
+        attachement_analyzer(file)
 
 
 
