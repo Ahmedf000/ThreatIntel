@@ -38,9 +38,9 @@ def expandURL(url):
     return None
 
 
-def enumerate_login(file):
+def javascript_ioc(file):
     """test with the tests html file"""
-    with open(f'{file}.eml', 'r') as f:
+    with open(f'{file}', 'r') as f:
         content = f.read()
         get_html = bs4.BeautifulSoup(content, 'html.parser')
         """working with the script element"""
@@ -107,9 +107,14 @@ def enumerate_login(file):
                     match_redir2 = re.match(r'setTimeout\(.*?\(\){\s*windows.location\s*=\s*(https?:.*?)}', p.text)
                     #setTimeout\(.*?\nwindow\.location.href\s*=\s*(".*?").\n},\s*(\d*)\);
                     if match_redir:
-                        turn_to_sec = int(match_redir.group(1)) / 1000
+                        turn_to_sec = int(match_redir.group(2)) / 1000
                         print(Colors.red(f"[!] Please check for {match_redir} url redirection..!?\n Will redirect after {turn_to_sec} Seconds"))
                         settimeout_email += match_redir.group(1)
+                        if match_redir.group(1) != unquote(match_redir.group(1)):
+                            print(Colors.orange(f"[!] It seems the redirection URL is encoded...decoding"))
+                            decode_match = unquote(match_redir.group(1))
+                            if decode_match:
+                                print(Colors.yellow(f"[+] The decoded redirection URL is: {decode_match}"))
                         if decoded_url:
                             print(Colors.yellow(f"[*] We comparing the base64 Decode url to the redirection one\n{match_redir.group(1)}:{decoded_url}"))
                         if decoded_urls:
@@ -119,6 +124,14 @@ def enumerate_login(file):
 
                     if match_redir1:
                         turn_to_sec1 = int(match_redir1.group(1)) / 1000
+                        print(Colors.red(f"[!] Please check for {match_redir1} func url redirection..!?\n it will redirect after {turn_to_sec1} Seconds"))
+                    if match_redir2:
+                        if match_redir2.group(1) != unquote(match_redir2.group(1)):
+                            print(Colors.orange(f"[!] the Rediction URL seeme to be encoded...Decoding..."))
+                            decode_url_timeout = unquote(match_redir2.group(1))
+                            if decode_url_timeout:
+                                print(Colors.yellow(f"[*] Th decoded Redirection URL is {decode_url_timeout} "))
+
 
 
                 for u in url_shorteners_list:
@@ -154,6 +167,24 @@ def enumerate_login(file):
                                 print(check_redirection)
                         else:
                             print(Colors.yellow(f"[*] The redirection URL doesn't use a shortening service\nworth while checking where it leads"))
+
+
+
+
+
+def test():
+    import os
+
+    getdir = os.getcwd()
+    changedir = os.chdir(getdir)
+    if changedir:
+        findit = './Tests/test.html'
+        if os.path.exists(findit) and os.path.isfile(findit):
+            work_test = javascript_ioc(findit)
+            return work_test
+
+
+test()
 
 
 
