@@ -27,29 +27,29 @@ def webserver_logs(file):
     """) #Menu choice
     webserver_choice = input(Colors.yellow(f"[*] Please choose The webserver you are working with:   ")).lower()
     if webserver_choice == str(1):
-        file_apache_choice = input(Colors.yellow(f"[*] Please choose to work with Access(1) or Error Logs(2):   ")).lower()
-        if file_apache_choice == str(1):
-            print(Colors.yellow(f"[*] Make Sure to move the specific file to work in Desktop"))
-            if platform.system() == "Windows":
-                cmd = subprocess.run(
-                    ['powershell', '-NoProfile', '-Command', '(Get-LocalUser | select-object -first 1).tostring()'],
-                    capture_output=True, text=True).stdout.strip()
-                if os.getcwd() != f'C:\\Users\\{cmd}\\Desktop':
-                    os.chdir(f'C:\\Users\\{cmd}\\Desktop')
+        #file_apache_choice = input(Colors.yellow(f"[*] Please choose to work with Access(1) or Error Logs(2):   ")).lower()
+        #if file_apache_choice == str(1):
+        print(Colors.yellow(f"[*] Make Sure to move the specific file to work in Desktop"))
+        if platform.system() == "Windows":
+            cmd = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', '(Get-LocalUser | select-object -first 1).tostring()'],
+                capture_output=True, text=True).stdout.strip()
+            if os.getcwd() != f'C:\\Users\\{cmd}\\Desktop':
+                os.chdir(f'C:\\Users\\{cmd}\\Desktop')
 
-            if platform.system() == "Linux":
-                cmd = subprocess.run(
-                    ['whoami'], capture_output=True, text=True
-                ).stdout.strip()
-                if os.getcwd() != f'/home/{cmd}/Desktop':
-                    os.chdir(f'/home/{cmd}/Desktop')
+        if platform.system() == "Linux":
+            cmd = subprocess.run(
+                ['whoami'], capture_output=True, text=True
+            ).stdout.strip()
+            if os.getcwd() != f'/home/{cmd}/Desktop':
+                os.chdir(f'/home/{cmd}/Desktop')
 
 
-            with open('access.log', 'r') as f:
-                content = f.read()
-                pattern_logs =  r'^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"' #() are capturing groups.
-                match_lines_logs = re.match(pattern_logs, content)
-                if match_lines_logs:
+        with open('access.log', 'r') as f:
+            content = f.read()
+            pattern_logs =  r'^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"' #() are capturing groups.
+            match_lines_logs = re.match(pattern_logs, content)
+            if match_lines_logs:
                     """ 
                     Different ways to analyse the logs...(unordered)
                     - Most repeated IP
@@ -63,12 +63,12 @@ def webserver_logs(file):
                     """
 
 
-                    if match_lines_logs.group(2):
+                if match_lines_logs.group(2):
                         """Working with http method attack patterns"""
-                        print(Colors.yellow(f"[*] Analyzing HTTP REQUEST Attack Patterns if any...."))
-                        print(Colors.yellow(f"[*] Checking for SQL Injection patterns...."))
-                        sqli_patterns = SQLi_decode_cond(match_lines_logs.group(2))
-                        if sqli_patterns:
+                    print(Colors.yellow(f"[*] Analyzing HTTP REQUEST Attack Patterns if any...."))
+                    print(Colors.yellow(f"[*] Checking for SQL Injection patterns...."))
+                    sqli_patterns = SQLi_decode_cond(match_lines_logs.group(2))
+                    if sqli_patterns:
                                 response = match_lines_logs.group(4)
                                 size = match_lines_logs.group(5)
                                 if response == 200 and int(size) == 0:
@@ -271,7 +271,7 @@ def webserver_logs(file):
                     print(Colors.yellow(f"[*] Running VirusTotal lookup on top IPs..."))
                     for ip, count in get_most:
                         print(Colors.cyan(f"\n[*] Querying: {ip}"))
-                        result = request_reputation(f"https://{ip}")  # or just ip — VT accepts IPs too
+                        result = request_reputation(f"https://{ip}")
                         if result:
                             if result['malicious'] > 0:
                                 print(Colors.red(f"  [!] MALICIOUS — {result['malicious']} detections"))
