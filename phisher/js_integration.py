@@ -18,7 +18,7 @@ def expandURL(url):
     TOKEN_EXPANDER = os.getenv("TOKEN_EXPANDER")
     if not TOKEN_EXPANDER:
         print(Colors.yellow("[!] Error grabbing your Token..."))
-        print("[!] Make sure .env file exists with onesimpleapi TOKEN...Register :)")
+        print(Colors.yellow("[!] Make sure .env file exists with onesimpleapi TOKEN...Register :)"))
         sys.exit(1)
 
     URL = "https://onesimpleapi.com/api/unshorten"
@@ -39,12 +39,7 @@ def expandURL(url):
 
 
 def enumerate_login(file):
-    """check for the file given with the user desktop
-        Is the word "Login" or its corresponding phrase in any language possible on the page?
-        Are form tags used on the page?
-        Are there expressions such as “Username” or “Password” in the placeholder section of the input fields on the page?
-        Are there “Login” or similar expressions in the title or header of the page?
-    """
+    """test with the tests html file"""
     with open(f'{file}.eml', 'r') as f:
         content = f.read()
         get_html = bs4.BeautifulSoup(content, 'html.parser')
@@ -69,22 +64,28 @@ def enumerate_login(file):
                 decoded_url = ''
                 decoded_urls = []
                 if 'atob()' in p.text:
-                    print(Colors.red(f"[!] Found Base64 decode atob() function"))
-                    match_base64_decode = re.match(r'atob\((.*?)\)', p.text)
-                    if match_base64_decode:
-                        decoded = unquote(match_base64_decode.group(1))
-                        print(Colors.green(f"[*] Decoded: {decoded}. Please Check for Any IoC "))
-                        if len(decoded) == 1:
+                    print(Colors.orange(f"[!] Found Base64 decode atob() function"))
+                    match_base64_decodes = re.findall(r'atob\((.*?)\)', p.text)
+                    match_base64_decode = re.findall(r'atob\((.*?)\)', p.text)
+                    if match_base64_decodes:
+                        print(Colors.yellow(f"[!] Seems to  be multiple encoded URLs..."))
+
+                        for match in match_base64_decodes:
+                            print(Colors.green(f"[*] Decoded: {match}. Please Check for Any IoC "))
+                            decoded = unquote(match)
                             decoded_url += decoded
-                        if len(decoded) > 1:
-                            decoded_urls.append(decoded)
+
+                    if match_base64_decode:
+                        print(Colors.yellow(f"[!] Seems to an encoded URL..."))
+                        decoded_ = unquote(match_base64_decode[0])
+                        decoded_urls.append(decoded)
 
 
                 if 'eval()' in p.text:
                     print(Colors.red(f"[!] Found execution eval() function"))
                     match_eval = re.match(r'eval\((.*?)\)', p.text)
                     if match_eval:
-                        print(Colors.red(f"[!] Found eval() Function"))
+                        print(f"\t --- {match_eval.group(1)}")
                         print(Colors.orange(f"""
                         - Please Trace eval to any URLSearchParams...execution from the param\n
                         - Check for further IOC for the eval paramter
@@ -102,10 +103,12 @@ def enumerate_login(file):
 
                     print(Colors.orange(f"[!] Found setTimeout function..Possible for redirection !?"))
                     match_redir = re.match(r'setTimeout\(.*?\nwindow\.location.href\s*=\s*(".*?").\n},\s*(\d*)\);', p.text)
+                    match_redir1 = re.match(r'setTimeout\(\(\)\s*\s*=>{.*?},\s*(\d*)\)', p.text)
+                    match_redir2 = re.match(r'setTimeout\(.*?\(\){\s*windows.location\s*=\s*(https?:.*?)}', p.text)
                     #setTimeout\(.*?\nwindow\.location.href\s*=\s*(".*?").\n},\s*(\d*)\);
                     if match_redir:
                         turn_to_sec = int(match_redir.group(1)) / 1000
-                        print(Colors.red(f"[!] Please check for {match_redir.group(1)} url redirection..!?\n Will redirect after {turn_to_sec} Seconds"))
+                        print(Colors.red(f"[!] Please check for {match_redir} url redirection..!?\n Will redirect after {turn_to_sec} Seconds"))
                         settimeout_email += match_redir.group(1)
                         if decoded_url:
                             print(Colors.yellow(f"[*] We comparing the base64 Decode url to the redirection one\n{match_redir.group(1)}:{decoded_url}"))
@@ -113,6 +116,9 @@ def enumerate_login(file):
                             print(Colors.yellow(f"[*] Seems to be more than one direction URL...\n"))
                             for d in decoded_urls:
                                 print(Colors.red(f"[*]{match_redir.group(1)}:{d}"))
+
+                    if match_redir1:
+                        turn_to_sec1 = int(match_redir1.group(1)) / 1000
 
 
                 for u in url_shorteners_list:
