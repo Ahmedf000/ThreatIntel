@@ -74,8 +74,8 @@ def webserver_logs(file):
                     else:
                         print("Error reading the response and status code")
 
-                move_to_next = input("Press Enter to move to next pattern ")
-                print(move_to_next)
+                #move_to_next = input(Press Enter to move to next pattern ")
+                #print(move_to_next)
 
                 print(Colors.yellow(f"[*] Checking for Command injection patterns...."))
                 command_injection_patterns = decode_encode(match_lines_logs.group(3))
@@ -97,8 +97,8 @@ def webserver_logs(file):
                     else:
                         print("Error reading the response and status code")
 
-                move_to_next = input("Press Enter to move to next pattern ")
-                print(move_to_next)
+                #move_to_next = input(Press Enter to move to next pattern ")
+                #print(move_to_next)
 
                 if match_lines_logs.group(7):
                     AUTOMATED_TOOLS = [
@@ -186,7 +186,7 @@ def webserver_logs(file):
                 if match_it:
                     month_extractor.append(match_it.groups(1))
                 if match_it_2:
-                    day_extractor.append(match_it_2.groups(1) + ':' + match_it_2.groups(2))
+                    day_extractor.append(match_it_2.groups(1) + match_it_2.groups(2))
 
             month_mapper = {
                 '01': 'January', '02': 'February', '03': 'March', '04': 'April',
