@@ -197,7 +197,7 @@ def javascript_ioc(file):
     import os
     #MOVE THE REPOSITORY TO UR DESKTOP IF YOU WANT TO RUN A TEST OR CLONE IT THERE
     #ADD BACKSLASH TO THE PATH - OR ADJUST UR PATH TO THE FOLDER PLEASE
-    getdir = os.path.join('C:Users\%USERNAME%\Desktop\ThreatIntel', 'Tests', 'test.html')
+    getdir = os.path.join(r'C:Users\%USERNAME%\Desktop\ThreatIntel', 'Tests', 'test.html')
     if os.path.exists(getdir) and os.path.isfile(getdir):
         javascript_ioc(getdir)
     else:
