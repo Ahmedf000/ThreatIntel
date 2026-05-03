@@ -25,7 +25,6 @@ A command-line threat intelligence tool for analyzing phishing emails and web se
 ## Requirements
 
 - Python 3.10+
-- pip packages listed in requirements below
 - A VirusTotal API key (free tier works)
 - Optional: a onesimpleapi token for URL unshortening
 
