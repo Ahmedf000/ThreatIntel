@@ -8,8 +8,7 @@ def SQLi_patterns(param):
 
     """going to hardcode multiple SQLi techniques"""
 
-
-
+    global tech
     _RE = re.compile(r".*?")
 
     KEYWORD_INJECTION = [

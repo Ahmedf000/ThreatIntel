@@ -55,8 +55,11 @@ def webserver_logs(file):
             if match_lines_logs.group(3):
                 print(Colors.yellow(f"[*] Analyzing HTTP REQUEST Attack Patterns if any...."))
                 print(Colors.yellow(f"[*] Checking for SQL Injection patterns...."))
-                sqli_patterns = SQLi_decode_cond(match_lines_logs.group(3))
-                if sqli_patterns:
+                sqli_pattern = SQLi_patterns(match_lines_logs.group(3))
+                print(sqli_pattern)
+
+
+                if SQLi_patterns:
                     response = match_lines_logs.group(4)
                     size = match_lines_logs.group(5)
                     if response == '200' and int(size) == 0:
@@ -64,8 +67,8 @@ def webserver_logs(file):
                         print(Colors.red(f"[!] Please further check for the IOC "))
                     elif response == '200' and 0 < int(size) < 1200:
                         print(Colors.red(f"""[!] The response for the attack is 200 - OK 
-                             The response size with {int(size)} bytes.... 
-                             the size may indicates error response from DB - A foothold for the threat actor   """))
+                        The response size with {int(size)} bytes.... 
+                        the size may indicates error response from DB - A foothold for the threat actor   """))
                         print(Colors.red(f"[!] Please further check for the IOC "))
                     elif response == '200' and int(size) > 8000:
                         print(Colors.red(f"""[!] WARNING: Reponse is {int(size)} bytes....a successful attack
@@ -87,8 +90,8 @@ def webserver_logs(file):
                         print(Colors.red(f"[!] Please further check for the IOC "))
                     elif response_ == '200' and 0 < int(size_) < 1200:
                         print(Colors.red(f"""[!] The response for the attack is 200 - OK 
-                                                     The response size with {int(size_)} bytes.... 
-                                                     the size may indicates error response - A foothold for the threat actor   """))
+                        The response size with {int(size_)} bytes.... 
+                        the size may indicates error response - A foothold for the threat actor   """))
                         print(Colors.red(f"[!] Please further check for the IOC "))
                     elif response_ == '200' and int(size_) > 8000:
                         print(Colors.red(f"""[!] WARNING: Reponse is {int(size_)} bytes....a successful attack
@@ -97,7 +100,7 @@ def webserver_logs(file):
                     else:
                         print("Error reading the response and status code")
 
-                #move_to_next = input(Press Enter to move to next pattern ")
+                #move_to_next = input(Press Enter to move to next pattern )
                 #print(move_to_next)
 
                 if match_lines_logs.group(7):
@@ -109,10 +112,18 @@ def webserver_logs(file):
                     for tool in AUTOMATED_TOOLS:
                         if tool in match_lines_logs.group(7):
                             detect_rule[f"{tool} Found in Logs"] = match_lines_logs.group(7)
+                            for content in content.splitlines():
+                                if match_lines_logs.group(7) in content:
+                                    pattern_logs2 = r'^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"'
+                                    get_tool_ip = re.search(pattern_logs2, content).group(1)
+                                    print(Colors.red(f"[*] Detected IP from the automated tool {tool}: {get_tool_ip}"))
+
+
                     if detect_rule:
                         print(detect_rule)
 
         """get MOST repeated IP"""
+        print()
         ips = []
         print(Colors.yellow(f"[*] Checking for The Most repeated IP...."))
         for line in content.splitlines():
@@ -174,19 +185,35 @@ def webserver_logs(file):
                     if get_year == date.today().year:
                         _get_mid_date_.append(final)
 
+
+
             full_date = []
             for first, second in zip(_get_mid_date_, _3_last_matches):
                 full_date.append(first + ':' + second)
 
+
             month_extractor = []
             day_extractor = []
             for full in full_date:
-                match_it = re.match(r'^(\d{4})-(\d{2})-(\d{2})', full)
-                match_it_2 = re.match(r'^(\d{4})-(\d{2})-(\d{2})', full)
+                match_it = re.search(r'^(\d{4})-(\d{2})-(\d{2})', full)
+                match_it_2 = re.match(r'^(\d{2}):(\d{2}):(\d{2})', full)
                 if match_it:
                     month_extractor.append(match_it.groups(1))
                 if match_it_2:
                     day_extractor.append(match_it_2.groups(1) + match_it_2.groups(2))
+
+            #for i in month_extractor:
+                #print(i) debugging====
+                #('2026', '04', '29')
+
+            cleaner_month_extractor = []
+            for month in month_extractor:
+                result_month = ":".join(month)
+                cleaner_month_extractor.append(result_month)
+            #print(type(cleaner_month_extractor))
+            #for month in cleaner_month_extractor:
+                #print(type(month))
+
 
             month_mapper = {
                 '01': 'January', '02': 'February', '03': 'March', '04': 'April',
@@ -194,33 +221,45 @@ def webserver_logs(file):
                 '09': 'September', '10': 'October', '11': 'November', '12': 'December'
             }
 
+            cleaner_month_extractor_work = []
+            for clean in cleaner_month_extractor:
+                matchit = re.findall(r':(\d{2}):', clean)
+                for m in matchit:
+                    cleaner_month_extractor_work.append(m)
+
+
             work_up_day = []
-            get_most_month = Counter(month_extractor).most_common(1)[0][0]
-            change_month = month_mapper.get(get_most_month[1], get_most_month[1])
-            print(Colors.green(f"[+] {change_month} Appears to be the most busy month...."))
-            for d in day_extractor:
-                if get_most_month[1] in d:
-                    work_up_day.append(d)
+            get_most_month = Counter(cleaner_month_extractor_work).most_common(1)[0][0]
+            wrapper = str(month_mapper.get(get_most_month))
+            print(Colors.green(f"[+] {wrapper} Appears to be the busiest month...."))
+
+
+
+            for w in work_up_day:
+                print(w)
 
             busy_day = []
-            if work_up_day:
-                for w in work_up_day:
-                    match_repeated_day = re.match(r'\d\d', w)
-                    if match_repeated_day:
-                        busy_day.append(w)
+            if get_most_month:
+                try:
+                    for entry in cleaner_month_extractor:
+                        match_day = re.search(rf":{get_most_month}:(\d{{2}})", entry)
+                        if match_day:
+                            busy_day.append(match_day.group(1))
+                except Exception as e:
+                    print(f"[-] Error Occurred. Exception: {e}")
             match_most_busy_day = Counter(busy_day).most_common(5)
 
             while len(match_most_busy_day) < 5:
                 match_most_busy_day.append(('N/A', 0))
 
             print(Colors.green(f"""
-                [+] Within Month: {change_month}
-                The Three Most Busy Days appears to be in the Logs:
-                        {match_most_busy_day[0]} #1
-                        {match_most_busy_day[1]} #2
-                        {match_most_busy_day[2]} #3
-                        {match_most_busy_day[3]} #4
-                        {match_most_busy_day[4]} #5
+            [+] Within Month: {wrapper}
+            The Three Most Busy Days appears to be in the Logs:
+            {match_most_busy_day[0]} #1
+            {match_most_busy_day[1]} #2
+            {match_most_busy_day[2]} #3
+            {match_most_busy_day[3]} #4
+            {match_most_busy_day[4]} #5
             """))
 
             get_back_content = []
@@ -237,39 +276,38 @@ def webserver_logs(file):
                     match_all_specifically_day5 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[4][0]))})', get)
                     if match_all_specifically_day1:
                         print(Colors.cyan(f"""[+] {g} Appears to be in the 1st most busy day from 
-                                                        {change_month} - Which Busy Month from the Logs...."""))
+                        {wrapper} - Which Busy Month from the Logs...."""))
                     if match_all_specifically_day2:
                         print(Colors.cyan(f"""[+] {g} Appears to be in the 2nd most busy day from 
-                                                        {change_month} - Which Busy Month from the Logs...."""))
+                        {wrapper} - Which Busy Month from the Logs...."""))
                     if match_all_specifically_day3:
                         print(Colors.cyan(f"""[+] {g} Appears to be in the 3rd most busy day from 
-                                                        {change_month} - Which Busy Month from the Logs...."""))
+                        {wrapper} - Which Busy Month from the Logs...."""))
                     if match_all_specifically_day4:
                         print(Colors.cyan(f"""[+] {g} Appears to be in the 4th most busy day from 
-                                                        {change_month} - Which Busy Month from the Logs...."""))
+                        {wrapper} - Which Busy Month from the Logs...."""))
                     if match_all_specifically_day5:
                         print(Colors.cyan(f"""[+] {g} Appears to be in the 5th most busy day from 
-                                                        {change_month} - Which Busy Month from the Logs...."""))
+                        {wrapper} - Which Busy Month from the Logs...."""))
 
                 count += 1
 
         ask_checking_ip_from_attacks = input(Colors.green(f"""[*] Do you want to check any of the IPS in the attack"
-                                                          pattern logs:         (yes/no)""")).lower()
+        pattern logs:   (yes/no)""")).lower()
         print(ask_checking_ip_from_attacks)
 
         if ask_checking_ip_from_attacks == 'yes':
             print(Colors.yellow(f"[*] Running VirusTotal lookup on top IPs..."))
             for ip, count in get_most:
                 print(Colors.cyan(f"\n[*] Querying: {ip}"))
-                result = request_reputation(f"https://{ip}")
+                result = request_reputation(ip)
                 if result:
                     if result['malicious'] > 0:
                         print(Colors.red(f"  [!] MALICIOUS — {result['malicious']} detections"))
                     elif result['suspicious'] > 0:
                         print(Colors.orange(f"  [!] SUSPICIOUS — {result['suspicious']} flags"))
                     else:
-                        print(Colors.green(
-                            f"  [+] Clean — Harmless: {result['harmless']} | Undetected: {result['Undetected']}"))
+                        print(Colors.green(f"  [+] Clean — Harmless: {result['harmless']} | Undetected: {result['Undetected']}"))
 
         if ask_checking_ip_from_attacks == 'no':
             print(Colors.yellow("[*] Skipping IP reputation check."))
@@ -315,8 +353,8 @@ def webserver_logs(file):
                             print(Colors.red(f"[!] Please further check for the IOC "))
                         elif response == '200' and 0 < int(size) < 1200:
                             print(Colors.red(f"""[!] The response for the attack is 200 - OK 
-                                             The response size with {int(size)} bytes.... 
-                                             the size may indicates error response from DB - A foothold for the threat actor   """))
+                            The response size with {int(size)} bytes.... 
+                            the size may indicates error response from DB - A foothold for the threat actor   """))
                             print(Colors.red(f"[!] Please further check for the IOC "))
                         elif response == '200' and int(size) > 8000:
                             print(Colors.red(f"""[!] WARNING: Reponse is {int(size)} bytes....a successful attack
@@ -325,8 +363,7 @@ def webserver_logs(file):
                         else:
                             print("Error reading the response and status code")
 
-                    move_to_next = input("Press Enter to move to next pattern ")
-                    print(move_to_next)
+
 
                     print(Colors.yellow(f"[*] Checking for Command injection patterns...."))
                     command_injection_patterns = decode_encode(match_lines_logs.group(3))
@@ -348,9 +385,6 @@ def webserver_logs(file):
                         else:
                             print("Error reading the response and status code")
 
-                    move_to_next = input("Press Enter to move to next pattern ")
-                    print(move_to_next)
-
                     if match_lines_logs.group(7):
                         AUTOMATED_TOOLS = [
                             "Nuclei", "Sqlmap", "Nikto", "Hydra", "Nmap", "fuff", "Masscan", "Metasploit",
@@ -360,8 +394,12 @@ def webserver_logs(file):
                         for tool in AUTOMATED_TOOLS:
                             if tool in match_lines_logs.group(7):
                                 detect_rule[f"{tool} Found in Logs"] = match_lines_logs.group(7)
-                        if detect_rule:
-                            print(detect_rule)
+                                for content in content.splitlines():
+                                    if match_lines_logs.group(7) in content:
+                                        pattern_logs2 = r'^(\S+) - - \[(.*?)\] "(\S+ \S+ \S+)" (\d+) (\d+) "(.*?)" "(.*?)"'
+                                        get_tool_ip = re.search(pattern_logs2, content).group(1)
+                                        print(Colors.red(
+                                            f"[*] Detected IP from the automated tool {tool}: {get_tool_ip}"))
 
             ips = []
             print(Colors.yellow(f"[*] Checking for The Most repeated IP...."))
@@ -424,9 +462,12 @@ def webserver_logs(file):
                         if get_year == date.today().year:
                             _get_mid_date_.append(final)
 
+
                 full_date = []
                 for first, second in zip(_get_mid_date_, _3_last_matches):
                     full_date.append(first + ':' + second)
+
+
 
                 month_extractor = []
                 day_extractor = []
@@ -436,7 +477,9 @@ def webserver_logs(file):
                     if match_it:
                         month_extractor.append(match_it.groups(1))
                     if match_it_2:
-                        day_extractor.append(match_it_2.groups(1) + ':' + match_it_2.groups(2))
+                        day_extractor.append(match_it_2.groups(1) + match_it_2.groups(2))
+
+
 
                 month_mapper = {
                     '01': 'January', '02': 'February', '03': 'March', '04': 'April',
@@ -452,6 +495,8 @@ def webserver_logs(file):
                     if get_most_month[1] in d:
                         work_up_day.append(d)
 
+
+
                 busy_day = []
                 if work_up_day:
                     for w in work_up_day:
@@ -464,14 +509,14 @@ def webserver_logs(file):
                     match_most_busy_day.append(('N/A', 0))
 
                 print(Colors.green(f"""
-                            [+] Within Month: {change_month}
-                            The Three Most Busy Days appears to be in the Logs:
-                                    {match_most_busy_day[0]} #1
-                                    {match_most_busy_day[1]} #2
-                                    {match_most_busy_day[2]} #3
-                                    {match_most_busy_day[3]} #4
-                                    {match_most_busy_day[4]} #5
-                        """))
+                    [+] Within Month: {change_month}
+                     The Three Most Busy Days appears to be in the Logs:
+                    {match_most_busy_day[0]} #1
+                    {match_most_busy_day[1]} #2
+                    {match_most_busy_day[2]} #3
+                    {match_most_busy_day[3]} #4
+                    {match_most_busy_day[4]} #5
+                    """))
 
                 get_back_content = []
                 for c in content.splitlines():
@@ -487,24 +532,24 @@ def webserver_logs(file):
                         match_all_specifically_day5 = re.match(rf'^({re.escape(ip_add)}) - - \[({re.escape(str(match_most_busy_day[4][0]))})', get)
                         if match_all_specifically_day1:
                             print(Colors.cyan(f"""[+] {g} Appears to be in the 1st most busy day from 
-                                                                    {change_month} - Which Busy Month from the Logs...."""))
+                            {change_month} - Which Busy Month from the Logs...."""))
                         if match_all_specifically_day2:
                             print(Colors.cyan(f"""[+] {g} Appears to be in the 2nd most busy day from 
-                                                                    {change_month} - Which Busy Month from the Logs...."""))
+                            {change_month} - Which Busy Month from the Logs...."""))
                         if match_all_specifically_day3:
                             print(Colors.cyan(f"""[+] {g} Appears to be in the 3rd most busy day from 
-                                                                    {change_month} - Which Busy Month from the Logs...."""))
+                            {change_month} - Which Busy Month from the Logs...."""))
                         if match_all_specifically_day4:
                             print(Colors.cyan(f"""[+] {g} Appears to be in the 4th most busy day from 
-                                                                    {change_month} - Which Busy Month from the Logs...."""))
+                            {change_month} - Which Busy Month from the Logs...."""))
                         if match_all_specifically_day5:
                             print(Colors.cyan(f"""[+] {g} Appears to be in the 5th most busy day from 
-                                                                    {change_month} - Which Busy Month from the Logs...."""))
+                            {change_month} - Which Busy Month from the Logs...."""))
 
                     count += 1
 
             ask_checking_ip_from_attacks = input(Colors.green(f"""[*] Do you want to check any of the IPS in the attack"
-                                                                      pattern logs:         (yes/no)""")).lower()
+            pattern logs:     (yes/no)""")).lower()
             print(ask_checking_ip_from_attacks)
 
             if ask_checking_ip_from_attacks == 'yes':
@@ -518,8 +563,7 @@ def webserver_logs(file):
                         elif result['suspicious'] > 0:
                             print(Colors.orange(f"  [!] SUSPICIOUS — {result['suspicious']} flags"))
                         else:
-                            print(Colors.green(
-                                f"  [+] Clean — Harmless: {result['harmless']} | Undetected: {result['Undetected']}"))
+                            print(Colors.green(f"[+] Clean — Harmless: {result['harmless']} | Undetected: {result['Undetected']}"))
 
             if ask_checking_ip_from_attacks == 'no':
                 print(Colors.yellow("[*] Skipping IP reputation check."))
