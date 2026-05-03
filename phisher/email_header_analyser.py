@@ -38,9 +38,8 @@ def attachement_analyzer(file):
         if os.getcwd() != f'/home/{cmd}/Desktop':
             os.chdir(f'/home/{cmd}/Desktop')
 
-
-    with open(f'{file}.eml', "rb") as file:
-        msg = message_from_file(file, policy=policy.default)
+    with open(f'{file}.eml', 'r', encoding='utf-8', errors='replace') as f:
+        msg = email.message_from_file(f, policy=policy.default)
 
     attachments = []
     if not msg.walk():
@@ -360,4 +359,3 @@ def email_header(file):
 
 
 
-email_header("Important Update to GitHub Copilot Interaction Data Usage Policy")

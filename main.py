@@ -1,9 +1,9 @@
 import argparse
+import sys
 from colors.color import Colors
 from phisher.email_header_analyser import email_header
 from server_logs.entry_analyzer import webserver_logs
 from phisher.js_integration import javascript_ioc
-
 
 
 def main():
@@ -18,38 +18,23 @@ def main():
     parser = argparse.ArgumentParser(description="""A tool to analyze phishing emails header with Js integration,
     And WebServer Logs """)
     parser.add_argument("-e", "--email", help="Analyse email headers -- Enter your argument with ' ' ")
-    parser.add_argument("-j","--js_integration",help="Analyse JS Script within Source code of the email")
-    parser.add_argument("-w", "--webserver_logs",help="Analyse web server logs for IOCs")
+    parser.add_argument("-j", "--js_integration", help="Analyse JS Script within Source code of the email")
+    parser.add_argument("-w", "--webserver_logs", help="Analyse web server logs for IOCs")
     args = parser.parse_args()
 
-    import sys
-
-    if len(sys.argv) < 1:
+    if len(sys.argv) < 2:
         parser.print_help()
         sys.exit(1)
 
     if args.email:
-        if args.email != str(args.email):
-            convert_ = str(args.email)
-            email_header(convert_)
-        else:
-            email_header(args.email)
+        email_header(str(args.email))
 
     if args.js_integration:
-        if args.js_integration != str(args.js_integration):
-            javascript_ioc(args.js_integration)
-        else:
-            javascript_ioc(args.js_integration)
-
+        javascript_ioc(str(args.js_integration))
 
     if args.webserver_logs:
         webserver_logs(args.webserver_logs)
 
 
-
-
-
 if __name__ == '__main__':
     main()
-
-

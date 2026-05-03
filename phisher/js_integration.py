@@ -38,7 +38,7 @@ def expandURL(url):
     res = requests.post(url=URL,
                         headers={
                             "Content-Type": "application/json",
-                            "Authorization": "Bearer {TOKEN_EXPANDER}"
+                            "Authorization": f"Bearer {TOKEN_EXPANDER}"
                         },
                         json={
                             "output": "json"
