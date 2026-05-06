@@ -8,16 +8,14 @@ import sys
 import json
 import os
 
-load_dotenv()
-API_KEY = os.getenv("VT_API")
-if not API_KEY:
-    print("[!] Error: API credentials not found!")
-    print("[!] Make sure .env file exists with Virus Total API Key...Register :)")
-    sys.exit(1)
 
 
 def request_reputation(domain):
     """Adjustment taken from VIRUS TOTAL WEBSITE"""
+    API_KEY = os.getenv("VT_API")
+    if not API_KEY:
+        print(Colors.red("[!] VT_API key not found — skipping VirusTotal lookup."))
+        return None
 
     clean_domain = domain.replace("https://", "").replace("http://", "").strip("/")
 
