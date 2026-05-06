@@ -9,6 +9,9 @@ from colors.color import Colors
 import os
 from dotenv import load_dotenv
 import sys
+import platform
+import subprocess
+from pathlib import Path
 
 URL_SHORTENERS_LIST = [
     "bit.ly", "tinyurl.com", "t.ly", "rebrand.ly", "is.gd",
@@ -25,8 +28,45 @@ URL_SHORTENERS_LIST = [
     "shortcm.li", "tny.im", "vzturl.com", "chilp.it", "y2u.be"
 ]
 
+
+def _resolve_eml(file):
+    candidate = str(file)
+    if candidate.endswith('.eml'):
+        candidate = candidate[:-4]
+
+    def try_path(p):
+        full = Path(str(p) + '.eml')
+        return full if full.exists() else None
+
+    found = try_path(candidate)
+    if found:
+        return str(found)
+
+    found = try_path(Path.cwd() / Path(candidate).name)
+    if found:
+        return str(found)
+
+    if platform.system() == "Linux":
+        user = subprocess.run(['whoami'], capture_output=True, text=True).stdout.strip()
+        found = try_path(Path(f'/home/{user}/Desktop') / Path(candidate).name)
+        if found:
+            return str(found)
+    elif platform.system() == "Windows":
+        user = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             '(Get-LocalUser | select-object -first 1).tostring()'],
+            capture_output=True, text=True).stdout.strip()
+        found = try_path(Path(f'C:\\Users\\{user}\\Desktop') / Path(candidate).name)
+        if found:
+            return str(found)
+
+    raise FileNotFoundError(
+        f"[!] Could not find '{Path(candidate).name}.eml' — "
+        f"tried: given path, {Path.cwd()}, and Desktop."
+    )
+
+
 def expandURL(url):
-    """get the expanded url IF the user adjusted it"""
     load_dotenv()
     TOKEN_EXPANDER = os.getenv("TOKEN_EXPANDER")
     if not TOKEN_EXPANDER:
@@ -52,8 +92,9 @@ def expandURL(url):
 
 
 def javascript_ioc(file):
-    """test with the tests html file"""
-    with open(f"{file}.eml", 'r', encoding='utf-8', errors='replace') as f:
+    eml_path = _resolve_eml(file)
+
+    with open(eml_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
 
     get_html = bs4.BeautifulSoup(content, 'html.parser')
@@ -85,8 +126,6 @@ def javascript_ioc(file):
                 else:
                     print(Colors.yellow("[!] atob() call found but couldn't extract argument"))
 
-
-
                 if 'eval()' in script_text:
                     print(Colors.red(f"[!] Found execution eval() function"))
                     match_eval = re.match(r'eval\((.*?)\)', script_text, re.DOTALL)
@@ -97,16 +136,8 @@ def javascript_ioc(file):
                         - Check for further IOC for the eval paramter
                         """))
 
-
                 settimeout_email = ''
                 if 'setTimeout' in script_text:
-
-                    """
-                    setTimeout(function() {
-                    window.location.href = "https://www.example.com";
-                    }, 3000); // Redirects after 3 seconds
-                    """
-
                     print(Colors.orange(f"[!] Found setTimeout function..Possible for redirection !?"))
                     match_redir = re.search(
                         r'setTimeout\s*\(\s*function\s*\(\s*\)\s*\{.*?'
@@ -121,7 +152,7 @@ def javascript_ioc(file):
                         r'setTimeout\s*\(.*?function\s*\(\s*\)\s*\{.*?window\.location\s*=\s*(https?:[^\s"\']+)',
                         script_text, re.DOTALL
                     )
-                    #setTimeout\(.*?\nwindow\.location.href\s*=\s*(".*?").\n},\s*(\d*)\);
+
                     if match_redir:
                         redir_url = match_redir.group(1)
                         turn_to_sec = int(match_redir.group(2)) / 1000
@@ -148,8 +179,6 @@ def javascript_ioc(file):
                             decode_url_timeout = unquote(match_redir2.group(1))
                         else:
                             print(Colors.yellow(f"[*] setTimeout URL: {match_redir2.group(1)}"))
-
-
 
                 for u in URL_SHORTENERS_LIST:
                     if settimeout_email and u in settimeout_email:
@@ -188,26 +217,3 @@ def javascript_ioc(file):
                     else:
                         print(Colors.cyan(
                             f"[*] Meta redirect doesn't use a known shortener — still worth investigating: {redirect_target}"))
-
-
-
-
-
-"""def test():
-    import os
-    #MOVE THE REPOSITORY TO UR DESKTOP IF YOU WANT TO RUN A TEST OR CLONE IT THERE
-    #ADD BACKSLASH TO THE PATH - OR ADJUST UR PATH TO THE FOLDER PLEASE
-    getdir = os.path.join(r'C:Users\%USERNAME%\Desktop\ThreatIntel', 'Tests', 'test.html')
-    if os.path.exists(getdir) and os.path.isfile(getdir):
-        javascript_ioc(getdir)
-    else:
-        print(Colors.yellow(f"[!] test.html not found at {getdir}"))
-        print(Colors.yellow("    Make sure Tests/test.html exists in your working directory."))
-
-
-test()"""
-
-
-
-
-

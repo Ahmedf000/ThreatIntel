@@ -12,33 +12,53 @@ from pathlib import Path
 
 import argparse
 
-
 import sys
 import json
 from phisher.requestor_VT import request_reputation
 from colors.color import Colors
 
 
+def _resolve_eml(file):
+    candidate = str(file)
+    if candidate.endswith('.eml'):
+        candidate = candidate[:-4]
+
+    def try_path(p):
+        full = Path(str(p) + '.eml')
+        return full if full.exists() else None
+
+    found = try_path(candidate)
+    if found:
+        return str(found)
+
+    found = try_path(Path.cwd() / Path(candidate).name)
+    if found:
+        return str(found)
+
+    if platform.system() == "Linux":
+        user = subprocess.run(['whoami'], capture_output=True, text=True).stdout.strip()
+        found = try_path(Path(f'/home/{user}/Desktop') / Path(candidate).name)
+        if found:
+            return str(found)
+    elif platform.system() == "Windows":
+        user = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             '(Get-LocalUser | select-object -first 1).tostring()'],
+            capture_output=True, text=True).stdout.strip()
+        found = try_path(Path(f'C:\\Users\\{user}\\Desktop') / Path(candidate).name)
+        if found:
+            return str(found)
+
+    raise FileNotFoundError(
+        f"[!] Could not find '{Path(candidate).name}.eml' — "
+        f"tried: given path, {Path.cwd()}, and Desktop."
+    )
 
 
 def attachement_analyzer(file):
-    """Analyze email attachments safely"""
-    if platform.system() == 'Windows':
-        cmd = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', '(Get-LocalUser | select-object -first 1).tostring()'],
-                 capture_output=True,
-                 text=True).stdout.strip()
-        if os.getcwd() != f'C:\\Users\\{cmd}\\Desktop':
-            os.chdir(f'C:\\Users\\{cmd}\\Desktop')
+    eml_path = _resolve_eml(file)
 
-    if platform.system() == "Linux":
-        cmd = subprocess.run(
-            ['whoami'], capture_output=True, text=True
-        ).stdout.strip()
-        if os.getcwd() != f'/home/{cmd}/Desktop':
-            os.chdir(f'/home/{cmd}/Desktop')
-
-    with open(f'{file}.eml', 'r', encoding='utf-8', errors='replace') as f:
+    with open(eml_path, 'r', encoding='utf-8', errors='replace') as f:
         msg = email.message_from_file(f, policy=policy.default)
 
     attachments = []
@@ -62,7 +82,6 @@ def attachement_analyzer(file):
             if payload:
                 attachments.append((get_filename, payload))
 
-
         if attachments:
             with zipfile.ZipFile(f"attachments.zip", 'w') as zipf:
                 for filename, data in attachments:
@@ -72,26 +91,10 @@ def attachement_analyzer(file):
             print('No attachments found')
 
 
-
-
 def email_header(file):
-    """get the .eml file - better be in Desktop ?"""
-    if platform.system() == "Windows":
-        cmd = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', '(Get-LocalUser | select-object -first 1).tostring()'],
-            capture_output=True, text=True).stdout.strip()
-        if os.getcwd() != f'C:\\Users\\{cmd}\\Desktop':
-            os.chdir(f'C:\\Users\\{cmd}\\Desktop')
+    eml_path = _resolve_eml(file)
 
-    if platform.system() == "Linux":
-        cmd = subprocess.run(
-            ['whoami'], capture_output=True, text=True
-        ).stdout.strip()
-        if os.getcwd() != f'/home/{cmd}/Desktop':
-            os.chdir(f'/home/{cmd}/Desktop')
-
-    with open(f'{file}.eml', 'r') as f:
-
+    with open(eml_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
         headers = Parser(policy=default).parsestr(content)
         deliveredto_ = headers['Delivered-To']
@@ -104,7 +107,6 @@ def email_header(file):
             print(Colors.yellow("[!] Return-Path doesn't exist!"))
         if not reply_to:
             print(Colors.yellow("[!] Reply-To doesn't exist!"))
-
 
         headers_list = [
             deliveredto_ or 'N/A',
@@ -175,24 +177,17 @@ def email_header(file):
 
         if cleaned_headers_list[1] != 'N/A':
 
-            """Tells SMTP servers where they should send non-delivery notifications. 
-            Matching the entire pararagh, isolate it then extract DKIM-DMARC-SPF"""
             getdkim_ = re.compile(r'Authentication-Results:.*?(?=\n\S)', re.DOTALL)
             matchdkim_ = getdkim_.search(content).group()
 
-
-
-
             if matchdkim_:
                 print(Colors.blue("Running the analysis...\n"))
-                getdkim_rule_ = re.compile(r'dkim=\S+' ,re.IGNORECASE)
-                # \S+ matches everything until the next space/newline
+                getdkim_rule_ = re.compile(r'dkim=\S+', re.IGNORECASE)
                 getdkim_match_ = getdkim_rule_.search(matchdkim_).group()
                 if getdkim_match_:
                     check_dkim_pass = getdkim_match_.split('=')
                     print(Colors.yellow("[*] Starting The scoring system..."))
-                    moveto_contextual = input \
-                        (Colors.yellow("Press enter to start contextual analysis starting with DKIM.."))
+                    moveto_contextual = input(Colors.yellow("Press enter to start contextual analysis starting with DKIM.."))
                     print(moveto_contextual)
                     if check_dkim_pass[1].lower() == 'pass':
                         scoring_system += 20
@@ -210,27 +205,21 @@ def email_header(file):
                     print(Colors.red("[!] DKIM Signature not found...."))
                     print(Colors.red(f"Score is down to {scoring_system}."))
 
-
-
-
-
                 get_return_domain = re.search(r'@\S+', cleaned_headers_list[1]).group()
                 get_pure_return_domain = get_return_domain.split('.')
                 join_get_pure_return_domain = get_pure_return_domain[1] + '.' + get_pure_return_domain[2]
 
                 get_from_domain = re.search(r'@\S+', cleaned_headers_list[2]).group()
                 get_pure_from_domain = get_from_domain.split('.')
-                """making sure to strip the @ from the from..."""
                 strip_from_at = get_pure_from_domain[0].strip('@')
-                join_get_pure_from_domain = strip_from_at + '.' +get_pure_from_domain[1]
+                join_get_pure_from_domain = strip_from_at + '.' + get_pure_from_domain[1]
 
                 getto_comparison = input(Colors.yellow("Press Enter to move to Return-Path & Path comparison.."))
                 print(getto_comparison)
                 if join_get_pure_return_domain == join_get_pure_from_domain:
                     scoring_system += 15
                     print(Colors.green(f"""[+] Both From & Return-Path domain matches..."""))
-                    print(Colors.blue(f"Great indicator...now scoring system up to {scoring_system}\n"
-                                      f""))
+                    print(Colors.blue(f"Great indicator...now scoring system up to {scoring_system}\n"))
 
                 else:
                     print(Colors.red(f"""⚠️ UUUHHH - The From & Return-Path domains are not match please check...
@@ -343,7 +332,6 @@ def email_header(file):
         else:
             print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
 
-
         if suggest_further_request == 'no':
             print(Colors.yellow(f"[*] Finishing up with scoring system! to {scoring_system}"))
             if scoring_system >= 90:
@@ -356,6 +344,3 @@ def email_header(file):
                 print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
 
         attachement_analyzer(file)
-
-
-
