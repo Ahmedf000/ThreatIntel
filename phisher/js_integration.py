@@ -194,11 +194,16 @@ def _collect_all_redirects(script_text, raw_content, get_html):
         url = _clean_url(m.group(1))
         found.append(('plain text URL', url))
 
+    def _url_key(u):
+        # strip CF token for dedup so truncated QP variants collapse to one
+        return re.sub(r'[?&]__cf_chl_tk=[^&]*', '', u).rstrip('?&').rstrip('=').rstrip('.W')
+
     unique = []
-    seen = set()
+    seen   = set()
     for label, url in found:
-        if url not in seen and len(url) > 8:
-            seen.add(url)
+        key = _url_key(url)
+        if key not in seen and len(url) > 8:
+            seen.add(key)
             unique.append((label, url))
 
     return unique
@@ -464,8 +469,100 @@ def _analyse_response_body(resp_text, final_url):
     return is_cf
 
 
+def _query_urlscan(url):
+    print(Colors.yellow(f"\n  [*] Querying urlscan.io for: {url}"))
+    try:
+        search_url = f"https://urlscan.io/api/v1/search/?q=page.url:{urlparse(url).netloc}&size=3"
+        r = requests.get(search_url, timeout=10, headers={"User-Agent": "ThreatIntel/1.0"})
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            if results:
+                print(Colors.green(f"  [+] urlscan.io has {len(results)} scan(s) for this domain:"))
+                for res in results[:3]:
+                    page      = res.get("page", {})
+                    task      = res.get("task", {})
+                    final_u   = page.get("url", "N/A")
+                    status    = page.get("status", "N/A")
+                    scan_time = task.get("time", "N/A")
+                    scan_id   = res.get("_id", "")
+                    print(Colors.cyan(f"    Final URL  : {final_u}"))
+                    print(Colors.cyan(f"    Status     : {status}"))
+                    print(Colors.cyan(f"    Scan time  : {scan_time}"))
+                    print(Colors.cyan(f"    Report     : https://urlscan.io/result/{scan_id}/"))
+                    if final_u and final_u != url:
+                        print(Colors.red(f"    [!] REDIRECTED TO: {final_u}"))
+            else:
+                print(Colors.yellow("  [!] No existing scans found on urlscan.io"))
+                print(Colors.yellow(f"  [*] Submit manually: https://urlscan.io/scan/#\"{url}\""))
+        else:
+            print(Colors.yellow(f"  [!] urlscan.io returned {r.status_code}"))
+    except Exception as e:
+        print(Colors.red(f"  [!] urlscan.io query failed: {e}"))
+
+
+def _query_wayback(url):
+    print(Colors.yellow(f"\n  [*] Querying Wayback Machine CDX for: {url}"))
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        cdx_url = f"http://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&limit=3&fl=original,statuscode,timestamp&filter=statuscode:301,302,303,307,308"
+        r = requests.get(cdx_url, timeout=10)
+        if r.status_code == 200 and r.text.strip() and r.text.strip() != '[]':
+            rows = r.json()
+            if len(rows) > 1:
+                print(Colors.green(f"  [+] Wayback Machine has redirect records for {domain}:"))
+                for row in rows[1:4]:
+                    print(Colors.cyan(f"    {row}"))
+            else:
+                print(Colors.yellow("  [!] No redirect records found in Wayback CDX"))
+        else:
+            print(Colors.yellow("  [!] No Wayback CDX results"))
+    except Exception as e:
+        print(Colors.red(f"  [!] Wayback query failed: {e}"))
+
+
+def _try_head_location(url, session, headers):
+    try:
+        r = session.head(url, headers=headers, timeout=8, verify=False, allow_redirects=False)
+        loc = r.headers.get("Location")
+        if loc:
+            print(Colors.green(f"  [+] HEAD Location header: {loc}"))
+            return loc
+    except Exception:
+        pass
+    return None
+
+
+def _parse_js_redirects_from_html(html, base_url):
+    found = []
+    patterns = [
+        r'window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+        r'location\.replace\s*\(\s*["\']([^"\']+)["\']',
+        r'location\.assign\s*\(\s*["\']([^"\']+)["\']',
+        r'document\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+        r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^;]+;\s*url=([^\s"\']+)',
+        r'href\s*=\s*["\']?(https?://[^"\'<>\s]{10,})',
+        r'(?:url|redirect|goto|next)\s*[:=]\s*["\']?(https?://[^"\'<>\s&]{10,})',
+    ]
+    seen = set()
+    for pat in patterns:
+        for m in re.finditer(pat, html, re.IGNORECASE | re.DOTALL):
+            raw = _clean_url(m.group(1))
+            if raw.startswith('http') and raw not in seen:
+                parsed = urlparse(raw)
+                if parsed.netloc and parsed.netloc != urlparse(base_url).netloc:
+                    seen.add(raw)
+                    found.append(raw)
+    return found
+
+
 def _follow_redirect_chain(url):
     print(Colors.yellow(f"\n[*] Following redirect chain for: {url}"))
+
+    # Strip CF token for clean base URL
+    base_clean = re.sub(r'[?&]__cf_chl_tk=[^&]*', '', url).rstrip('?&')
+    is_cf_url  = base_clean != url
 
     BROWSER_HEADERS = {
         "User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -478,90 +575,108 @@ def _follow_redirect_chain(url):
         "Sec-Fetch-Mode":            "navigate",
         "Sec-Fetch-Site":            "none",
         "Cache-Control":             "max-age=0",
+        "Referer":                   "https://mail.google.com/",
     }
 
+    session = requests.Session()
+    session.max_redirects = 15
+    final_url  = url
+    is_blocked = False
+
+    # Strategy 1: HEAD first to catch immediate Location headers
+    print(Colors.cyan("\n[*] Strategy 1: HEAD request for Location header"))
+    head_loc = _try_head_location(url, session, BROWSER_HEADERS)
+    if not head_loc and is_cf_url:
+        head_loc = _try_head_location(base_clean, session, BROWSER_HEADERS)
+
+    # Strategy 2: Full GET with browser headers
+    print(Colors.cyan("[*] Strategy 2: GET with full browser headers"))
     try:
-        session = requests.Session()
-        session.max_redirects = 15
-        resp = session.get(url, headers=BROWSER_HEADERS, timeout=15,
-                           verify=False, allow_redirects=True)
+        targets = [url]
+        if is_cf_url:
+            targets.append(base_clean)
 
-        chain     = [r.url for r in resp.history] + [resp.url]
-        final_url = resp.url
+        resp     = None
+        resp_url = url
+        for target in targets:
+            try:
+                resp = session.get(target, headers=BROWSER_HEADERS, timeout=15,
+                                   verify=False, allow_redirects=True)
+                chain = [r.url for r in resp.history] + [resp.url]
+                print(Colors.cyan(f"  HTTP chain ({len(chain)} hop{'s' if len(chain)>1 else ''}):"))
+                for i, hop in enumerate(chain):
+                    marker = " <-- FINAL" if i == len(chain)-1 else ""
+                    print(Colors.cyan(f"    {i+1}. {hop}{marker}"))
+                print(Colors.cyan(f"  Status: {resp.status_code} | Server: {resp.headers.get('Server','?')} | Content-Type: {resp.headers.get('Content-Type','?')}"))
 
-        print(Colors.cyan(f"[*] HTTP redirect chain ({len(chain)} hop{'s' if len(chain)>1 else ''}):"))
-        for i, hop in enumerate(chain):
-            marker = " <-- FINAL" if i == len(chain) - 1 else ""
-            print(Colors.cyan(f"    {i+1}. {hop}{marker}"))
+                loc_hdr = resp.headers.get("Location") or resp.headers.get("Refresh")
+                if loc_hdr:
+                    print(Colors.orange(f"  [!] Location/Refresh header: {loc_hdr}"))
 
-        print(Colors.cyan(f"[*] Final status code : {resp.status_code}"))
-        print(Colors.cyan(f"[*] Content-Type      : {resp.headers.get('Content-Type', 'unknown')}"))
-        print(Colors.cyan(f"[*] Server            : {resp.headers.get('Server', 'unknown')}"))
+                resp_url = resp.url
+                if resp.status_code not in (403, 503):
+                    break
+            except Exception as e:
+                print(Colors.red(f"  [!] GET failed for {target}: {e}"))
 
-        location_hdr = resp.headers.get("Location") or resp.headers.get("Refresh")
-        if location_hdr:
-            print(Colors.orange(f"[!] Response Location/Refresh header: {location_hdr}"))
+        if resp:
+            resp_text  = resp.text
+            is_blocked = resp.status_code in (403, 503) or any(
+                c.lower() in resp_text.lower() for c in CF_INDICATORS
+            )
 
-        resp_text = resp.text
-        is_cf     = _analyse_response_body(resp_text, final_url)
+            if is_blocked:
+                print(Colors.orange("  [!] Cloudflare / WAF block detected"))
 
-        # If CF blocked, auto-retry the clean base URL without CF params
-        if is_cf or resp.status_code in (403, 503):
-            base_clean = re.sub(r'[?&]__cf_chl_tk=[^&]*', "", url).rstrip("?&")
-            if base_clean != url:
-                print(Colors.yellow(f"\n[*] Auto-retrying without Cloudflare token: {base_clean}"))
-                try:
-                    resp2 = session.get(base_clean, headers=BROWSER_HEADERS,
-                                        timeout=15, verify=False, allow_redirects=True)
-                    print(Colors.cyan(f"[*] Retry status: {resp2.status_code}"))
-                    chain2 = [r.url for r in resp2.history] + [resp2.url]
-                    if len(chain2) > 1:
-                        print(Colors.cyan("[*] Retry redirect chain:"))
-                        for i, hop in enumerate(chain2):
-                            print(Colors.cyan(f"    {i+1}. {hop}"))
-                    if resp2.status_code == 200:
-                        print(Colors.green("[+] Got 200 on clean URL — analysing response"))
-                        _analyse_response_body(resp2.text, resp2.url)
-                except Exception as e2:
-                    print(Colors.red(f"[!] Retry failed: {e2}"))
+            # Strategy 3: Parse JS redirects from response HTML
+            print(Colors.cyan("\n[*] Strategy 3: Parsing JS redirects from response body"))
+            js_redir = _parse_js_redirects_from_html(resp_text, resp_url)
+            if js_redir:
+                print(Colors.green(f"  [+] JS/HTML redirects pointing to DIFFERENT domains:"))
+                for u in js_redir:
+                    print(Colors.red(f"      --> {u}"))
+            else:
+                print(Colors.yellow("  [!] No cross-domain JS redirects found in response"))
 
-        print(Colors.bold("\n[+] === ANALYST SUGGESTIONS ==="))
-        print(Colors.yellow("  To find the REAL final malicious URI:"))
-        print(Colors.yellow("  1. Open URL in browser DevTools -> Network tab"))
-        print(Colors.yellow("     Look for the last non-200 response (301/302/303/307/308)"))
-        print(Colors.yellow("  2. Use urlscan.io for a full browser render + screenshot + redirect chain"))
-        print(Colors.yellow("     https://urlscan.io"))
-        print(Colors.yellow("  3. Use VirusTotal URL scanner for redirect chain + final destination"))
-        print(Colors.yellow("     https://www.virustotal.com/gui/home/url"))
-        print(Colors.yellow("  4. Use ANY.RUN sandbox for live JS execution + network capture"))
-        print(Colors.yellow("     https://app.any.run"))
-        print(Colors.yellow("  5. Use curl with full chain logging:"))
-        print(Colors.yellow("     curl -v -L --max-redirs 20 -A \'Mozilla/5.0...\' \'<url>\' 2>&1 | grep -E \'Location|< HTTP\'"))
-        print(Colors.yellow("  6. Use Selenium/Playwright to render JS and capture final navigation URL"))
-        print(Colors.yellow("  7. Check Wayback Machine for cached version of the page"))
-        print(Colors.yellow("     https://web.archive.org"))
-        print(Colors.yellow("  8. If download gave CF challenge HTML — open it in a text editor"))
-        print(Colors.yellow("     and look for the real URL inside the JS or form action"))
-
-        if is_cf or resp.status_code in (403, 503):
-            print(Colors.orange("\n  [!] This URL is behind Cloudflare — direct requests will be blocked."))
-            print(Colors.orange("      Best approach: urlscan.io or ANY.RUN will render it fully."))
-            print(Colors.cyan("      Quick command to try with cookies:"))
-            print(Colors.cyan(f"      curl -L -A \'Mozilla/5.0\' --cookie-jar /tmp/cf_cookies.txt \'{url}\'"))
-
-        return final_url
+            _analyse_response_body(resp_text, resp_url)
 
     except requests.exceptions.TooManyRedirects:
-        print(Colors.red("[!] Too many redirects — possible redirect loop or bot trap."))
-    except requests.exceptions.SSLError as e:
-        print(Colors.red(f"[!] SSL error: {e}"))
-    except requests.exceptions.ConnectionError as e:
-        print(Colors.red(f"[!] Connection error: {e}"))
-    except requests.exceptions.Timeout:
-        print(Colors.red("[!] Request timed out."))
+        print(Colors.red("  [!] Too many redirects — redirect loop."))
+        is_blocked = True
     except Exception as e:
-        print(Colors.red(f"[!] Could not follow redirect: {e}"))
-    return url
+        print(Colors.red(f"  [!] GET failed: {e}"))
+        is_blocked = True
+
+    # Strategy 4: urlscan.io lookup (no API key needed)
+    print(Colors.cyan("\n[*] Strategy 4: urlscan.io passive lookup"))
+    _query_urlscan(base_clean if is_cf_url else url)
+
+    # Strategy 5: Wayback Machine CDX
+    print(Colors.cyan("\n[*] Strategy 5: Wayback Machine CDX redirect records"))
+    _query_wayback(base_clean if is_cf_url else url)
+
+    print(Colors.bold("\n[+] === ANALYST SUGGESTIONS ==="))
+    print(Colors.yellow("  To get the REAL final malicious URI:"))
+    print(Colors.yellow("  1. Browser DevTools -> Network tab -> last non-200 response"))
+    print(Colors.yellow("  2. urlscan.io full render (free, no login):"))
+    print(Colors.yellow(f"     https://urlscan.io/search/#page.domain:{urlparse(base_clean if is_cf_url else url).netloc}"))
+    print(Colors.yellow("  3. VirusTotal URL scan:"))
+    print(Colors.yellow(f"     https://www.virustotal.com/gui/home/url"))
+    print(Colors.yellow("  4. ANY.RUN interactive sandbox (live JS execution + network log):"))
+    print(Colors.yellow("     https://app.any.run"))
+    print(Colors.yellow("  5. curl redirect trace:"))
+    print(Colors.yellow(f"     curl -v -L --max-redirs 20 -A 'Mozilla/5.0' '{base_clean if is_cf_url else url}' 2>&1 | grep -E 'Location|< HTTP'"))
+    print(Colors.yellow("  6. Selenium/Playwright — renders JS, captures final URL after all redirects"))
+    print(Colors.yellow("  7. Wayback Machine snapshot:"))
+    print(Colors.yellow(f"     https://web.archive.org/web/*/{base_clean if is_cf_url else url}"))
+
+    if is_blocked or is_cf_url:
+        print(Colors.orange("\n  [!] CF/WAF protected — direct Python requests will be blocked."))
+        print(Colors.orange("      urlscan.io and ANY.RUN are the fastest way to see the real destination."))
+        print(Colors.cyan(f"      Direct submit to urlscan: https://urlscan.io/scan/#{base_clean if is_cf_url else url}"))
+
+    return final_url
+
 
 
 def expandURL(url):
