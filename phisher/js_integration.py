@@ -270,6 +270,11 @@ def _download_payload(url):
         if ext_flag:
             print(Colors.red(f"[!] Suspicious file extension detected: {ext_flag}"))
 
+        # Auto-scan the downloaded file for real URLs
+        content_t = resp.headers.get("Content-Type", "")
+        if "html" in content_t.lower() or save_path.suffix == ".html":
+            _scan_saved_file(str(save_path))
+
     except requests.exceptions.TooManyRedirects:
         print(Colors.red("[!] Too many redirects — possible redirect loop."))
     except requests.exceptions.SSLError:
@@ -283,40 +288,40 @@ def _download_payload(url):
 
 
 def _extract_urls_from_response(resp_text, base_url):
-    found = []
     parsed_base = urlparse(base_url)
     base_root   = f"{parsed_base.scheme}://{parsed_base.netloc}"
+    seen  = set()
+    found = []
 
     patterns = [
-        r'window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
-        r'location\.replace\s*\(\s*["\']([^"\']+)["\']',
-        r'location\.assign\s*\(\s*["\']([^"\']+)["\']',
-        r'document\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
-        r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^;]+;\s*url=([^\s"\']+)',
-        r'<meta[^>]+content=["\'][^;]+;\s*url=([^\s"\']+)["\']',
-        r'href\s*=\s*["\']?(https?://[^"\'<>\s]+)',
-        r'action\s*=\s*["\']?(https?://[^"\'<>\s]+)',
-        r'<iframe[^>]+src\s*=\s*["\']?(https?://[^"\'<>\s]+)',
-        r'(?:url|URL)\s*[=:]\s*["\']?(https?://[^"\'<>\s,\)]+)',
-        r'(?:redirect|location|goto|next|return_url|returnUrl|redirect_uri)\s*[=:]\s*["\']?(https?://[^"\'<>\s&]+)',
-        r'src\s*=\s*["\']?(https?://[^"\'<>\s]+)',
+        r'window\.location(?:\.href)?\s*=\s*["\'"]([^"\']+)["\'"]',
+        r'location\.replace\s*\(\s*["\'"]([^"\']+)["\'"]',
+        r'location\.assign\s*\(\s*["\'"]([^"\']+)["\'"]',
+        r'document\.location(?:\.href)?\s*=\s*["\'"]([^"\']+)["\'"]',
+        r'<meta[^>]+http-equiv=["\'"]refresh["\'"][^>]+content=["\'"][^;]+;\s*url=([^\s"\']+)',
+        r'<meta[^>]+content=["\'"][^;]+;\s*url=([^\s"\']+)["\'"]',
+        r'href\s*=\s*["\'"]?(https?://[^"\'<>\s]+)',
+        r'action\s*=\s*["\'"]?(https?://[^"\'<>\s]+)',
+        r'<iframe[^>]+src\s*=\s*["\'"]?(https?://[^"\'<>\s]+)',
+        r'(?:url|URL)\s*[=:]\s*["\'"]?(https?://[^"\'<>\s,\)]+)',
+        r'(?:redirect|location|goto|next|return_url|returnUrl|redirect_uri)\s*[=:]\s*["\'"]?(https?://[^"\'<>\s&]+)',
+        r'src\s*=\s*["\'"]?(https?://[^"\'<>\s]+)',
         r'(https?://[^\s"\'<>\)]+)',
     ]
 
-    seen = set()
     for pat in patterns:
         for m in re.finditer(pat, resp_text, re.IGNORECASE | re.DOTALL):
-            raw = m.group(1).strip().rstrip('.,;)\'">')
-            raw = raw.replace('=3D', '=').replace('/', '/')
+            raw = m.group(1).strip().rstrip(".,;)\'\">")
+            raw = raw.replace("=3D", "=")
             raw = unquote(raw)
             if raw and raw not in seen and len(raw) > 8:
                 seen.add(raw)
                 found.append(raw)
 
-    cf_action = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', resp_text, re.IGNORECASE)
+    cf_action = re.search(r'<form[^>]+action=["\'"]([^"\']+)["\'"]', resp_text, re.IGNORECASE)
     if cf_action:
         action_url = cf_action.group(1)
-        if action_url.startswith('/'):
+        if action_url.startswith("/"):
             action_url = base_root + action_url
         if action_url not in seen:
             found.append(action_url)
@@ -324,102 +329,155 @@ def _extract_urls_from_response(resp_text, base_url):
     return found
 
 
+NOISE_DOMAINS = [
+    "cloudflare.com", "jquery", "bootstrap", "googleapis",
+    "gstatic", "w3.org", "schema.org", "facebook.net",
+    "cdn.jsdelivr", "unpkg.com", "cdnjs.cloudflare"
+]
+
+CF_INDICATORS = [
+    "__cf_chl", "cf-challenge", "cf_clearance", "cloudflare",
+    "Checking your browser", "DDoS protection", "cf-spinner",
+    "jschl_vc", "jschl_answer", "cf-spinner-allow-3p"
+]
+
+PHISHING_PATTERNS = [
+    (r"\blogin\b",                        "Login form detected"),
+    (r"\bpassword\b",                     "Password field detected"),
+    (r"\bcredential",                      "Credential harvesting indicator"),
+    (r"\bsignin\b|sign[- ]in",           "Sign-in form detected"),
+    (r"\bverif",                           "Verification page detected"),
+    (r"update.*payment|payment.*update",    "Payment update page"),
+    (r"paypal",                             "PayPal impersonation possible"),
+    (r"microsoft|office\s?365|outlook",   "Microsoft impersonation possible"),
+    (r"google|gmail",                       "Google impersonation possible"),
+    (r"apple\.com|icloud",                "Apple impersonation possible"),
+    (r"amazon",                             "Amazon impersonation possible"),
+    (r"bankofamerica|wellsfargo|chase|hsbc|barclays|natwest", "Banking impersonation possible"),
+    (r"docusign|dropbox|sharepoint",       "Cloud/document service impersonation possible"),
+]
+
+
+def _scan_saved_file(filepath):
+    print(Colors.bold(f"\n[+] Auto-scanning saved file for real URLs: {filepath}"))
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+            saved_text = fh.read()
+
+        title_m = re.search(r"<title[^>]*>([^<]+)</title>", saved_text, re.IGNORECASE)
+        if title_m:
+            print(Colors.cyan(f"  [*] Page title : {title_m.group(1).strip()}"))
+
+        cf_hits = [c for c in CF_INDICATORS if c.lower() in saved_text.lower()]
+        if cf_hits:
+            print(Colors.orange(f"  [!] Cloudflare challenge page — indicators: {', '.join(cf_hits)}"))
+
+        urls_found = _extract_urls_from_response(saved_text, "https://unknown")
+        interesting = [
+            u for u in urls_found
+            if not any(n in u for n in NOISE_DOMAINS)
+            and not u.startswith("data:")
+        ]
+
+        if interesting:
+            print(Colors.bold(f"  [+] Real URLs found inside downloaded file ({len(interesting)}):"))
+            for u in interesting[:30]:
+                flag = " <-- SUSPICIOUS" if _is_suspicious_url(u) else ""
+                print(Colors.red(f"      {u}{flag}"))
+            print(Colors.yellow("  [*] The URLs above are the actual destinations — use these for further analysis"))
+        else:
+            print(Colors.yellow("  [!] No interesting URLs found inside the file."))
+
+        forms = re.findall(r'<form[^>]*action=[\"\']?([^\"\'>\s]+)', saved_text, re.IGNORECASE)
+        if forms:
+            print(Colors.orange(f"  [!] Form actions in saved file:"))
+            for fm in forms:
+                print(Colors.orange(f"      -> {fm}"))
+
+        hidden_inputs = re.findall(
+            r'<input[^>]+type=["\'"]hidden["\'"][^>]+name=["\'"]([^"\']+)["\'"][^>]+value=["\'"]([^"\']*)["\'"]',
+            saved_text, re.IGNORECASE
+        )
+        if hidden_inputs:
+            print(Colors.yellow("  [*] Hidden form fields:"))
+            for name, val in hidden_inputs[:10]:
+                print(Colors.yellow(f"      {name} = {val[:80]}"))
+
+    except Exception as e:
+        print(Colors.red(f"  [!] Could not scan saved file: {e}"))
+
+
 def _analyse_response_body(resp_text, final_url):
     print(Colors.bold("\n  [+] Analysing response body for hidden IOCs..."))
 
-    cf_indicators = [
-        '__cf_chl', 'cf-challenge', 'cf_clearance',
-        'cloudflare', 'Checking your browser', 'DDoS protection',
-        'cf-spinner', 'jschl_vc', 'jschl_answer'
-    ]
-    cf_hits = [c for c in cf_indicators if c.lower() in resp_text.lower()]
-    if cf_hits:
+    cf_hits = [c for c in CF_INDICATORS if c.lower() in resp_text.lower()]
+    is_cf   = bool(cf_hits)
+    if is_cf:
         print(Colors.orange(f"  [!] Cloudflare challenge detected — real destination hidden behind bot check"))
         print(Colors.orange(f"      Indicators: {', '.join(cf_hits)}"))
-        print(Colors.yellow("  [*] Suggestions to get the real URL:"))
-        print(Colors.yellow("      1. Open the URL in a real browser (Firefox/Chrome) and check Network tab"))
-        print(Colors.yellow("      2. Use curl with --cookie-jar and a full browser User-Agent"))
-        print(Colors.yellow("      3. Use Selenium/Playwright to render JS and capture the redirect"))
-        print(Colors.yellow("      4. Check VirusTotal / URLScan.io for a pre-rendered screenshot"))
-        print(Colors.yellow("      5. Try: curl -L -A 'Mozilla/5.0...' --cookie-jar /tmp/cj.txt '<url>'"))
-        print(Colors.yellow("      6. In browser DevTools: Network tab -> look for 302 after CF challenge"))
 
-    phishing_indicators = [
-        ('login', 'Login form detected'),
-        ('password', 'Password field detected'),
-        ('credential', 'Credential harvesting indicator'),
-        ('signin', 'Sign-in form detected'),
-        ('verify', 'Verification page detected'),
-        ('account', 'Account page indicator'),
-        ('update.*payment', 'Payment update page'),
-        ('paypal', 'PayPal impersonation possible'),
-        ('microsoft', 'Microsoft impersonation possible'),
-        ('google', 'Google impersonation possible'),
-        ('apple', 'Apple impersonation possible'),
-        ('amazon', 'Amazon impersonation possible'),
-        ('bankofamerica|wellsfargo|chase|hsbc|barclays', 'Banking impersonation possible'),
-    ]
-    for pattern, label in phishing_indicators:
+    for pattern, label in PHISHING_PATTERNS:
         if re.search(pattern, resp_text, re.IGNORECASE):
             print(Colors.red(f"  [!] {label}"))
 
-    title_m = re.search(r'<title[^>]*>([^<]+)</title>', resp_text, re.IGNORECASE)
+    title_m = re.search(r"<title[^>]*>([^<]+)</title>", resp_text, re.IGNORECASE)
     if title_m:
         print(Colors.cyan(f"  [*] Page title: {title_m.group(1).strip()}"))
 
-    forms = re.findall(r'<form[^>]*action=["\']?([^"\'>\s]+)', resp_text, re.IGNORECASE)
+        forms = re.findall(r'<form[^>]*action=[\"\']?([^\"\'>\s]+)', resp_text, re.IGNORECASE)
     if forms:
-        print(Colors.orange(f"  [!] Form actions found:"))
-        for f in forms:
-            print(Colors.orange(f"      -> {f}"))
+        print(Colors.orange("  [!] Form actions found:"))
+        for fm in forms:
+            print(Colors.orange(f"      -> {fm}"))
 
-    hidden_inputs = re.findall(r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']', resp_text, re.IGNORECASE)
+    hidden_inputs = re.findall(
+        r'<input[^>]+type=["\'"]hidden["\'"][^>]+name=["\'"]([^"\']+)["\'"][^>]+value=["\'"]([^"\']*)["\'"]',
+        resp_text, re.IGNORECASE
+    )
     if hidden_inputs:
-        print(Colors.yellow(f"  [*] Hidden form fields:"))
+        print(Colors.yellow("  [*] Hidden form fields:"))
         for name, val in hidden_inputs[:10]:
             print(Colors.yellow(f"      {name} = {val[:80]}"))
 
-    iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', resp_text, re.IGNORECASE)
+    iframes = re.findall(r'<iframe[^>]+src=["\'"]([^"\']+)["\'"]', resp_text, re.IGNORECASE)
     if iframes:
-        print(Colors.red(f"  [!] iframes detected:"))
+        print(Colors.red("  [!] iframes detected:"))
         for src in iframes:
             print(Colors.red(f"      {src}"))
 
     obfuscation = []
-    if 'eval(' in resp_text:           obfuscation.append('eval()')
-    if 'String.fromCharCode' in resp_text: obfuscation.append('String.fromCharCode()')
-    if 'atob(' in resp_text:           obfuscation.append('atob()')
-    if 'unescape(' in resp_text:       obfuscation.append('unescape()')
-    if re.search(r'\\x[0-9a-f]{2}', resp_text): obfuscation.append('hex-escaped chars')
+    if "eval("             in resp_text: obfuscation.append("eval()")
+    if "String.fromCharCode" in resp_text: obfuscation.append("String.fromCharCode()")
+    if "atob("             in resp_text: obfuscation.append("atob()")
+    if "unescape("         in resp_text: obfuscation.append("unescape()")
+    if re.search(r"\\x[0-9a-f]{2}", resp_text): obfuscation.append("hex-escaped chars")
     if obfuscation:
-        print(Colors.red(f"  [!] JS obfuscation techniques in response: {', '.join(obfuscation)}"))
+        print(Colors.red(f"  [!] JS obfuscation in response: {', '.join(obfuscation)}"))
 
     urls_in_body = _extract_urls_from_response(resp_text, final_url)
-    interesting = [u for u in urls_in_body
-                   if not any(skip in u for skip in [
-                       'cloudflare.com', 'jquery', 'bootstrap', 'googleapis',
-                       'gstatic', 'w3.org', 'schema.org', 'facebook.net'
-                   ])]
+    interesting  = [u for u in urls_in_body if not any(n in u for n in NOISE_DOMAINS)]
     if interesting:
-        print(Colors.bold(f"  [+] Interesting URLs extracted from response body ({len(interesting)}):"))
+        print(Colors.bold(f"  [+] Interesting URLs in response body ({len(interesting)}):"))
         for u in interesting[:20]:
             print(Colors.orange(f"      {u}"))
+
+    return is_cf
 
 
 def _follow_redirect_chain(url):
     print(Colors.yellow(f"\n[*] Following redirect chain for: {url}"))
 
     BROWSER_HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'max-age=0',
+        "User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language":           "en-US,en;q=0.9",
+        "Accept-Encoding":           "gzip, deflate",
+        "Connection":                "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest":            "document",
+        "Sec-Fetch-Mode":            "navigate",
+        "Sec-Fetch-Site":            "none",
+        "Cache-Control":             "max-age=0",
     }
 
     try:
@@ -428,57 +486,68 @@ def _follow_redirect_chain(url):
         resp = session.get(url, headers=BROWSER_HEADERS, timeout=15,
                            verify=False, allow_redirects=True)
 
-        chain = [r.url for r in resp.history] + [resp.url]
+        chain     = [r.url for r in resp.history] + [resp.url]
         final_url = resp.url
 
         print(Colors.cyan(f"[*] HTTP redirect chain ({len(chain)} hop{'s' if len(chain)>1 else ''}):"))
         for i, hop in enumerate(chain):
-            marker = ' <-- FINAL' if i == len(chain)-1 else ''
+            marker = " <-- FINAL" if i == len(chain) - 1 else ""
             print(Colors.cyan(f"    {i+1}. {hop}{marker}"))
 
         print(Colors.cyan(f"[*] Final status code : {resp.status_code}"))
-        print(Colors.cyan(f"[*] Content-Type      : {resp.headers.get('Content-Type','unknown')}"))
-        print(Colors.cyan(f"[*] Server            : {resp.headers.get('Server','unknown')}"))
+        print(Colors.cyan(f"[*] Content-Type      : {resp.headers.get('Content-Type', 'unknown')}"))
+        print(Colors.cyan(f"[*] Server            : {resp.headers.get('Server', 'unknown')}"))
 
-        location_hdr = resp.headers.get('Location') or resp.headers.get('Refresh')
+        location_hdr = resp.headers.get("Location") or resp.headers.get("Refresh")
         if location_hdr:
             print(Colors.orange(f"[!] Response Location/Refresh header: {location_hdr}"))
 
         resp_text = resp.text
+        is_cf     = _analyse_response_body(resp_text, final_url)
 
-        _analyse_response_body(resp_text, final_url)
+        # If CF blocked, auto-retry the clean base URL without CF params
+        if is_cf or resp.status_code in (403, 503):
+            base_clean = re.sub(r'[?&]__cf_chl_tk=[^&]*', "", url).rstrip("?&")
+            if base_clean != url:
+                print(Colors.yellow(f"\n[*] Auto-retrying without Cloudflare token: {base_clean}"))
+                try:
+                    resp2 = session.get(base_clean, headers=BROWSER_HEADERS,
+                                        timeout=15, verify=False, allow_redirects=True)
+                    print(Colors.cyan(f"[*] Retry status: {resp2.status_code}"))
+                    chain2 = [r.url for r in resp2.history] + [resp2.url]
+                    if len(chain2) > 1:
+                        print(Colors.cyan("[*] Retry redirect chain:"))
+                        for i, hop in enumerate(chain2):
+                            print(Colors.cyan(f"    {i+1}. {hop}"))
+                    if resp2.status_code == 200:
+                        print(Colors.green("[+] Got 200 on clean URL — analysing response"))
+                        _analyse_response_body(resp2.text, resp2.url)
+                except Exception as e2:
+                    print(Colors.red(f"[!] Retry failed: {e2}"))
 
         print(Colors.bold("\n[+] === ANALYST SUGGESTIONS ==="))
         print(Colors.yellow("  To find the REAL final malicious URI:"))
-        print(Colors.yellow("  1. Copy the URL above and open in browser DevTools -> Network tab"))
+        print(Colors.yellow("  1. Open URL in browser DevTools -> Network tab"))
         print(Colors.yellow("     Look for the last non-200 response (301/302/303/307/308)"))
-        print(Colors.yellow("  2. Use urlscan.io — paste the URL for a full browser render + screenshot"))
+        print(Colors.yellow("  2. Use urlscan.io for a full browser render + screenshot + redirect chain"))
         print(Colors.yellow("     https://urlscan.io"))
         print(Colors.yellow("  3. Use VirusTotal URL scanner for redirect chain + final destination"))
         print(Colors.yellow("     https://www.virustotal.com/gui/home/url"))
-        print(Colors.yellow("  4. Use ANY.RUN sandbox for live JS execution"))
+        print(Colors.yellow("  4. Use ANY.RUN sandbox for live JS execution + network capture"))
         print(Colors.yellow("     https://app.any.run"))
         print(Colors.yellow("  5. Use curl with full chain logging:"))
-        print(Colors.yellow("     curl -v -L --max-redirs 20 -A 'Mozilla/5.0...' '<url>' 2>&1 | grep -E 'Location|< HTTP'"))
-        print(Colors.yellow("  6. If Cloudflare protected — use Selenium/Playwright:"))
-        print(Colors.yellow("  6. If Cloudflare protected -- use Selenium/Playwright or ANY.RUN sandbox"))
-        print(Colors.yellow("  7. Check HTB writeups / Wayback Machine if the domain is known"))
-        print(Colors.yellow("  8. Extract __cf_chl_tk param value — sometimes the destination domain"))
-        print(Colors.yellow("     is encoded in the token or visible in the Cloudflare challenge JS"))
+        print(Colors.yellow("     curl -v -L --max-redirs 20 -A \'Mozilla/5.0...\' \'<url>\' 2>&1 | grep -E \'Location|< HTTP\'"))
+        print(Colors.yellow("  6. Use Selenium/Playwright to render JS and capture final navigation URL"))
+        print(Colors.yellow("  7. Check Wayback Machine for cached version of the page"))
+        print(Colors.yellow("     https://web.archive.org"))
+        print(Colors.yellow("  8. If download gave CF challenge HTML — open it in a text editor"))
+        print(Colors.yellow("     and look for the real URL inside the JS or form action"))
 
-        cf_tk = re.search(r'__cf_chl_tk=([^&\s]+)', url)
-        if cf_tk:
-            token = cf_tk.group(1)
-            print(Colors.orange(f"\n  [!] Cloudflare token found in URL: {token}"))
-            try:
-                padding = 4 - len(token) % 4
-                decoded_tk = base64.b64decode(token + '=' * padding).decode('utf-8', errors='replace')
-                print(Colors.cyan(f"  [*] Token base64 decoded: {decoded_tk}"))
-            except Exception:
-                pass
-            print(Colors.yellow("  [*] Try removing __cf_chl_tk param and requesting the base URL:"))
-            base_without_tk = re.sub(r'[?&]__cf_chl_tk=[^&]*', '', url).rstrip('?&')
-            print(Colors.cyan(f"      {base_without_tk}"))
+        if is_cf or resp.status_code in (403, 503):
+            print(Colors.orange("\n  [!] This URL is behind Cloudflare — direct requests will be blocked."))
+            print(Colors.orange("      Best approach: urlscan.io or ANY.RUN will render it fully."))
+            print(Colors.cyan("      Quick command to try with cookies:"))
+            print(Colors.cyan(f"      curl -L -A \'Mozilla/5.0\' --cookie-jar /tmp/cf_cookies.txt \'{url}\'"))
 
         return final_url
 
