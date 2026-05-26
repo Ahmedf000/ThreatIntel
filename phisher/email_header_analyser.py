@@ -1,507 +1,517 @@
 import zipfile
-from email.parser import Parser
-from email.policy import default
 import os
-import subprocess
-import platform
 import re
 import email
-from email import policy, message_from_file
-from pathlib import Path
-import argparse
-import sys
-import json
 import quopri
+from email.parser import Parser
+from email.policy import default as _ep_default
+from email import policy as _ep
+from pathlib import Path
+from dotenv import load_dotenv
+
 from phisher.requestor_VT import request_reputation
 from colors.color import Colors
 
+load_dotenv()
 
 FREE_MAIL_DOMAINS = {
     'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com',
     'icloud.com', 'protonmail.com', 'proton.me', 'aol.com', 'mail.com',
     'zoho.com', 'yandex.com', 'gmx.com', 'tutanota.com', 'fastmail.com',
-    'mail.ru', 'inbox.com', 'ymail.com', 'msn.com', 'qq.com'
+    'mail.ru', 'inbox.com', 'ymail.com', 'msn.com', 'qq.com',
 }
 
 
-def _resolve_eml(file):
+# ── Path resolver ─────────────────────────────────────────────────
+def _resolve_eml(file: str) -> str:
     candidate = os.path.expanduser(str(file).strip())
     if candidate.endswith('.eml'):
         candidate = candidate[:-4]
 
-    def try_path(p):
+    def _try(p):
         full = Path(str(p) + '.eml')
         return full if full.exists() else None
 
-    found = try_path(candidate)
-    if found:
-        return str(found)
-
-    found = try_path(Path.cwd() / Path(candidate).name)
-    if found:
-        return str(found)
-
-    found = try_path(Path.home() / 'Desktop' / Path(candidate).name)
-    if found:
-        return str(found)
+    for base in [
+        Path(candidate),
+        Path.cwd() / Path(candidate).name,
+        Path.home() / 'Desktop' / Path(candidate).name,
+        Path('/root/Desktop') / Path(candidate).name,
+    ]:
+        found = _try(base)
+        if found:
+            return str(found)
 
     raise FileNotFoundError(
         f"[!] Could not find '{Path(candidate).name}.eml' — "
-        f"tried: given path, {Path.cwd()}, and {Path.home() / 'Desktop'}."
+        f"tried: given path, {Path.cwd()}, {Path.home() / 'Desktop'}, /root/Desktop"
     )
 
 
-def _extract_domain(value):
-    if not value or value == 'N/A':
+# ── Domain helpers ────────────────────────────────────────────────
+def _extract_domain(value: str) -> str | None:
+    if not value or value in ('N/A', ''):
         return None
-    match = re.search(r'@([\w.\-]+)', value)
-    if not match:
-        return None
-    return match.group(1).strip('>').lower()
+    m = re.search(r'@([\w.\-]+)', value)
+    return m.group(1).strip('>').lower() if m else None
 
 
-def _normalize_domain(domain):
+def _normalize_domain(domain: str) -> str | None:
     if not domain:
         return None
-    parts = domain.rstrip('>').rstrip('.').split('.')
-    if len(parts) >= 2:
-        return parts[-2] + '.' + parts[-1]
-    return domain
+    parts = domain.rstrip('>.').split('.')
+    return (parts[-2] + '.' + parts[-1]) if len(parts) >= 2 else domain
 
 
-def _decode_qp_body(content):
+def _strip_angle(value: str) -> str:
+    """Return the address inside <…>, or the raw value if no brackets."""
+    if not value:
+        return 'N/A'
+    m = re.search(r'<([^>]+)>', str(value))
+    return m.group(1).strip() if m else str(value).strip()
+
+
+# ── Multi-address extraction ──────────────────────────────────────
+def _all_addresses_from_string(raw: str) -> list[str]:
+    """
+    Given a header value that may contain multiple addresses like
+      "Alice" <alice@x.com>, bob@y.com
+    return every unique email address found.
+    """
+    if not raw or raw == 'N/A':
+        return []
+    # prefer <addr> style
+    angle = re.findall(r'<([^>]+@[^>]+)>', raw)
+    if angle:
+        return [a.strip().lower() for a in angle]
+    # fall back to bare addr@domain
+    return [a.lower() for a in re.findall(r'[\w.+\-]+@[\w.\-]+', raw)]
+
+
+def _extract_all_recipients(
+        raw_content: str,
+        headers,
+) -> list[tuple[str, str]]:
+    """
+    Return [(header_name, address), …] for every recipient found across:
+      To, CC, BCC, Delivered-To (all occurrences), X-Forwarded-To, X-Original-To
+    Addresses deduplicated case-insensitively.
+    """
+    seen:  set[str]              = set()
+    result: list[tuple[str,str]] = []
+
+    def _add(hdr: str, raw: str):
+        for addr in _all_addresses_from_string(raw):
+            if addr not in seen:
+                seen.add(addr)
+                result.append((hdr, addr))
+
+    # Parsed headers (handles folded lines correctly)
+    for hdr in ('To', 'CC', 'BCC', 'X-Forwarded-To', 'X-Original-To'):
+        val = headers[hdr]
+        if val:
+            _add(hdr, str(val))
+
+    # Raw scan — catches repeated Delivered-To / X-Forwarded-To lines
+    # and multi-value To/CC that the simple parser might miss
+    HDR_RE = re.compile(
+        r'^(To|CC|BCC|Delivered-To|X-Forwarded-To|X-Original-To)'
+        r':\s*(.*?)(?=\n\S|\Z)',
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    for m in HDR_RE.finditer(raw_content):
+        _add(m.group(1), m.group(2).strip())
+
+    return result
+
+
+# ── IP extraction from Received chain ────────────────────────────
+def _extract_received_ips(content: str) -> list[tuple[int, str]]:
+    """Returns [(hop_index, ip), …] skipping RFC-1918 / loopback."""
+    headers = re.findall(
+        r'^Received:.*?(?=\n\S|\Z)', content, re.MULTILINE | re.DOTALL
+    )
+    result: list[tuple[int,str]] = []
+    seen: set[str] = set()
+    for idx, hdr in enumerate(headers, 1):
+        for ip in re.findall(r'\[(\d{1,3}(?:\.\d{1,3}){3})\]', hdr):
+            if (ip not in seen
+                    and not ip.startswith('127.')
+                    and not ip.startswith('10.')
+                    and not ip.startswith('192.168.')
+                    and not re.match(r'^172\.(1[6-9]|2\d|3[01])\.', ip)):
+                seen.add(ip)
+                result.append((idx, ip))
+    return result
+
+
+# ── Body URL extraction ───────────────────────────────────────────
+def _extract_urls_from_body(content: str) -> list[str]:
     try:
-        return quopri.decodestring(content.encode()).decode('utf-8', errors='replace')
+        decoded = quopri.decodestring(content.encode()).decode('utf-8', errors='replace')
     except Exception:
-        return content
-
-
-def _extract_urls_from_body(content):
-    decoded = _decode_qp_body(content)
-    cleaned = re.sub(r'=\n', '', decoded)
-    cleaned = cleaned.replace('=3D', '=').replace('=3d', '=')
-    urls = re.findall(r'https?://[^\s<>"\')\]]+', cleaned)
-    clean = []
-    for u in urls:
+        decoded = content
+    cleaned = re.sub(r'=\n', '', decoded).replace('=3D', '=').replace('=3d', '=')
+    seen:   set[str]  = set()
+    result: list[str] = []
+    for u in re.findall(r'https?://[^\s<>"\')\]]+', cleaned):
         u = u.rstrip('.,;)')
-        if u not in clean:
-            clean.append(u)
-    return clean
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
 
 
-def _extract_received_ips(content):
-    received_headers = re.findall(r'^Received:.*?(?=\n\S|\Z)', content, re.MULTILINE | re.DOTALL)
-    ips = []
-    for r in received_headers:
-        found = re.findall(r'\[(\d{1,3}(?:\.\d{1,3}){3})\]', r)
-        for ip in found:
-            if ip not in ips and not ip.startswith('127.') and not ip.startswith('10.') and not ip.startswith('192.168.'):
-                ips.append(ip)
-    return ips
+# ── Verdict printer ───────────────────────────────────────────────
+def _print_verdict(score: int):
+    print(Colors.bold(f"\n{'═'*60}"))
+    print(Colors.bold(f"  FINAL LEGITIMACY SCORE : {score}"))
+    print(Colors.bold(f"{'═'*60}"))
+    if score >= 90:
+        print(Colors.green( f"  [✓] STRONG LEGITIMACY — very likely genuine"))
+    elif score >= 50:
+        print(Colors.cyan(  f"  [~] MOSTLY LEGITIMATE — minor concerns"))
+    elif score >= 30:
+        print(Colors.orange(f"  [!] SUSPICIOUS — review carefully"))
+    else:
+        print(Colors.red(   f"  [!!!] HIGH PHISHING LIKELIHOOD"))
+    print(Colors.bold(f"{'═'*60}\n"))
 
 
-def attachement_analyzer(file):
-    eml_path = _resolve_eml(file)
+# ── VT helpers ────────────────────────────────────────────────────
+def _print_vt_result(vt: dict):
+    url_ = vt['url']
+    m, s, h, u = vt['malicious'], vt['suspicious'], vt['harmless'], vt['Undetected']
+    if m > 0 and s > 0:
+        print(Colors.red(   f"  [!!!] MALICIOUS ({m}) + SUSPICIOUS ({s}) — {url_}"))
+    elif m > 0:
+        print(Colors.red(   f"  [!]   MALICIOUS: {m} detection(s) — {url_}"))
+    elif s > 0:
+        print(Colors.orange(f"  [!]   SUSPICIOUS: {s} flag(s) — {url_}"))
+    else:
+        print(Colors.green( f"  [✓]   Clean — Harmless:{h}  Undetected:{u} — {url_}"))
+    if url_.startswith('http://'):
+        print(Colors.orange(f"  [!]   HTTP-only, no SSL — phishing indicator"))
 
+
+def _apply_vt_score(vt: dict, score: int) -> int:
+    m, s = vt['malicious'], vt['suspicious']
+    if m > 0 and s > 0: return score - 50
+    if m > 0:           return score - 30
+    if s > 0:           return score - 15
+    return score + 10
+
+
+# ── Attachment analyser (rewritten) ──────────────────────────────
+def attachment_analyzer(file: str):
+    print(Colors.bold(f"\n[+] Attachment Analysis"))
+    print("─" * 60)
+
+    eml_path = Path(_resolve_eml(file))
     with open(eml_path, 'r', encoding='utf-8', errors='replace') as f:
-        msg = email.message_from_file(f, policy=policy.default)
+        msg = email.message_from_file(f, policy=_ep.default)
 
-    attachments = []
-    if not msg.walk():
-        print("No attachments found")
-        return
-
-    pathcheck = Path('extracted_attachment')
-    pathcheck.mkdir(parents=True, exist_ok=True)
+    attachments: list[tuple[str, bytes]] = []
 
     for part in msg.walk():
         if part.get_content_maintype() == 'multipart':
             continue
-        if part.get('Content-Disposition') is None:
+
+        disposition = str(part.get('Content-Disposition') or '')
+        filename    = part.get_filename()
+
+        # Accept explicit attachments OR any part carrying a filename
+        if 'attachment' not in disposition.lower() and not filename:
             continue
 
-        get_filename = part.get_filename()
-        if get_filename:
-            file_name = re.sub(r'[\\/*?:"<>|]', "", get_filename)
-            payload = part.get_payload(decode=True)
-            if payload:
-                attachments.append((get_filename, payload))
+        if not filename:
+            ext      = part.get_content_subtype() or 'bin'
+            filename = f"attachment_{len(attachments)+1}.{ext}"
 
-        if attachments:
-            with zipfile.ZipFile("attachments.zip", 'w') as zipf:
-                for filename, data in attachments:
-                    zipf.writestr(filename, data)
-            print(f'Extracted {len(attachments)} files to attachments.zip')
-        else:
-            print('No attachments found')
+        safe_name = re.sub(r'[\\/*?:"<>|]', '_', filename)
+        payload   = part.get_payload(decode=True)
+
+        if payload:
+            attachments.append((safe_name, payload))
+            print(Colors.cyan(f"  [+] Found: {safe_name}  ({len(payload):,} bytes)  "
+                              f"[{part.get_content_type()}]"))
+
+    if not attachments:
+        print(Colors.yellow("  [!] No attachments found."))
+        return
+
+    # Write zip ONCE, AFTER collecting all parts (original wrote inside loop)
+    zip_path = eml_path.parent / (eml_path.stem + '_attachments.zip')
+    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data in attachments:
+            zf.writestr(name, data)
+
+    print(Colors.green(f"\n  [+] {len(attachments)} file(s) → {zip_path}"))
+    print(Colors.red("  [!] DO NOT open attachments outside a sandbox."))
 
 
-def email_header(file):
+# ── Main ──────────────────────────────────────────────────────────
+def email_header(file: str):
     eml_path = _resolve_eml(file)
 
     with open(eml_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
 
     if not content.strip():
-        print(Colors.red("[!] The .eml file is empty — nothing to analyse."))
+        print(Colors.red("[!] The .eml file is empty."))
         return
 
-    headers = Parser(policy=default).parsestr(content)
-    deliveredto_ = headers['Delivered-To']
-    return_      = headers['Return-Path']
-    from_        = headers['From']
-    to_          = headers['To']
-    reply_to     = headers['Reply-To']
+    headers = Parser(policy=_ep_default).parsestr(content)
 
-    subject_          = headers['Subject']          or 'N/A'
-    date_             = headers['Date']             or 'N/A'
-    message_id_       = headers['Message-ID']       or 'N/A'
-    x_mailer_         = headers['X-Mailer']         or headers['User-Agent'] or 'N/A'
-    content_type_     = headers['Content-Type']     or 'N/A'
-    x_originating_ip_ = headers['X-Originating-IP'] or 'N/A'
-    x_spam_status_    = headers['X-Spam-Status']    or 'N/A'
-    x_spam_score_     = headers['X-Spam-Score']     or 'N/A'
-    mime_version_     = headers['MIME-Version']      or 'N/A'
+    # ── Raw header values ─────────────────────────────────────────
+    from_raw      = str(headers['From']       or 'N/A')
+    return_raw    = str(headers['Return-Path']or 'N/A')
+    reply_to_raw  = str(headers['Reply-To']   or 'N/A')
+    delivered_to  = str(headers['Delivered-To']or 'N/A')
 
-    if not return_:
-        print(Colors.yellow("[!] Return-Path doesn't exist!"))
-    if not reply_to:
-        print(Colors.yellow("[!] Reply-To doesn't exist!"))
+    subject_      = str(headers['Subject']          or 'N/A')
+    date_         = str(headers['Date']             or 'N/A')
+    message_id_   = str(headers['Message-ID']       or 'N/A')
+    x_mailer_     = str(headers['X-Mailer'] or headers['User-Agent'] or 'N/A')
+    content_type_ = str(headers['Content-Type']     or 'N/A')
+    x_orig_ip_    = str(headers['X-Originating-IP'] or 'N/A')
+    x_spam_stat_  = str(headers['X-Spam-Status']    or 'N/A')
+    x_spam_scr_   = str(headers['X-Spam-Score']     or 'N/A')
+    mime_ver_     = str(headers['MIME-Version']      or 'N/A')
 
-    headers_list = [
-        deliveredto_ or 'N/A',
-        return_      or 'N/A',
-        from_        or 'N/A',
-        to_          or 'N/A',
-        reply_to     or 'N/A'
-    ]
+    from_clean    = _strip_angle(from_raw)
+    return_clean  = _strip_angle(return_raw)
+    replyto_clean = _strip_angle(reply_to_raw)
 
-    cleaned_headers_list = []
+    # ── All recipients ────────────────────────────────────────────
+    all_recipients = _extract_all_recipients(content, headers)
 
-    for header in headers_list:
-        if header == 'N/A':
-            cleaned_headers_list.append('N/A')
-            continue
-        if '<' not in header:
-            cleaned_headers_list.append(header)
-            continue
-        match_re = re.search(r'<(.+?)>', header)
-        if match_re:
-            cleaned_headers_list.append(match_re.group(1))
-        else:
-            cleaned_headers_list.append(header)
+    # ── Received chain IPs ────────────────────────────────────────
+    received_ips = _extract_received_ips(content)
 
-    print(cleaned_headers_list)
-    name_4_convenience = [
-        'Delivered-To',
-        'Return-Path',
-        'From',
-        'To',
-        'Reply-To'
-    ]
+    # ── Body URLs ─────────────────────────────────────────────────
+    body_urls = _extract_urls_from_body(content)
 
-    print(Colors.bold("\n[+] Email Header Analysis"))
+
+
+    print(Colors.bold("             EMAIL HEADER ANALYSIS                      "))
+
+    # Core headers
+    print(Colors.bold("\n[+] Core Headers"))
     print("─" * 60)
-    for raw_email, name_4_con in zip(cleaned_headers_list, name_4_convenience):
-        if raw_email and raw_email != 'N/A':
-            print(Colors.blue(f"  {name_4_con:<18}: {raw_email}"))
-        else:
-            print(Colors.yellow(f"  {name_4_con:<18}: Not present"))
+    def _pf(name, val, color=Colors.blue):
+        print(color(f"  {name:<22}: {val}"))
 
+    _pf("From",         from_clean)
+    _pf("Return-Path",  return_clean)
+    _pf("Reply-To",
+        replyto_clean if replyto_clean != 'N/A' else "(not present)",
+        Colors.yellow if replyto_clean == 'N/A' else Colors.blue)
+    _pf("Delivered-To", delivered_to)
+
+    # Warn if Reply-To is absent — common in phishing (uses From for replies
+    # but some phishing kits omit it to look clean)
+    if replyto_clean == 'N/A':
+        print(Colors.yellow("  [!] Reply-To header is absent."))
+
+    # ── ALL recipients ────────────────────────────────────────────
+    print(Colors.bold(f"\n[+] All Recipients  ({len(all_recipients)} unique address(es))"))
+    print("─" * 60)
+    if all_recipients:
+        for hdr_name, addr in all_recipients:
+            print(Colors.cyan(f"  {hdr_name:<22}: {addr}"))
+    else:
+        print(Colors.yellow("  [!] No recipient addresses could be extracted."))
+
+    # Extended fields
     print(Colors.bold("\n[+] Extended Header Fields"))
     print("─" * 60)
-    print(Colors.blue(f"  {'Subject':<18}: {subject_}"))
-    print(Colors.blue(f"  {'Date':<18}: {date_}"))
-    print(Colors.blue(f"  {'Message-ID':<18}: {message_id_}"))
-    print(Colors.blue(f"  {'X-Mailer':<18}: {x_mailer_}"))
-    print(Colors.blue(f"  {'Content-Type':<18}: {content_type_}"))
-    print(Colors.blue(f"  {'MIME-Version':<18}: {mime_version_}"))
-    if x_originating_ip_ != 'N/A':
-        print(Colors.orange(f"  {'X-Originating-IP':<18}: {x_originating_ip_}"))
-    if x_spam_status_ != 'N/A':
-        color = Colors.red if 'yes' in x_spam_status_.lower() else Colors.green
-        print(color(f"  {'X-Spam-Status':<18}: {x_spam_status_}"))
-    if x_spam_score_ != 'N/A':
-        print(Colors.blue(f"  {'X-Spam-Score':<18}: {x_spam_score_}"))
+    _pf("Subject",      subject_)
+    _pf("Date",         date_)
+    _pf("Message-ID",   message_id_)
+    _pf("X-Mailer",     x_mailer_)
+    _pf("Content-Type", content_type_)
+    _pf("MIME-Version", mime_ver_)
+    if x_orig_ip_ != 'N/A':
+        _pf("X-Originating-IP", x_orig_ip_, Colors.orange)
+    if x_spam_stat_ != 'N/A':
+        c = Colors.red if 'yes' in x_spam_stat_.lower() else Colors.green
+        _pf("X-Spam-Status", x_spam_stat_, c)
+    if x_spam_scr_ != 'N/A':
+        _pf("X-Spam-Score", x_spam_scr_)
 
-    received_ips = _extract_received_ips(content)
+    # ── Received chain ────────────────────────────────────────────
+    print(Colors.bold("\n[+] Received Chain — Public Origin IPs"))
+    print("─" * 60)
     if received_ips:
-        print(Colors.bold("\n[+] Received Chain — Origin IPs"))
-        print("─" * 60)
-        for idx, ip in enumerate(received_ips):
-            print(Colors.cyan(f"  Hop {idx+1}: {ip}"))
+        for hop, ip in received_ips:
+            print(Colors.cyan(f"  Hop {hop}: {ip}"))
+        if x_orig_ip_ != 'N/A':
+            known = {ip for _, ip in received_ips}
+            if x_orig_ip_ not in known:
+                print(Colors.orange(
+                    f"  [!] X-Originating-IP {x_orig_ip_} is NOT in the Received chain "
+                    f"— may indicate header forgery or internal relay."
+                ))
     else:
-        print(Colors.yellow("\n[!] No public IPs found in Received chain."))
+        print(Colors.yellow("  [!] No public IPs found in Received headers."))
+        if x_orig_ip_ != 'N/A':
+            print(Colors.orange(f"  X-Originating-IP: {x_orig_ip_}"))
 
-    body_urls = _extract_urls_from_body(content)
+    # ── Body URLs ─────────────────────────────────────────────────
+    print(Colors.bold("\n[+] URLs Found in Email Body"))
+    print("─" * 60)
     if body_urls:
-        print(Colors.bold("\n[+] URLs found in email body (incl. quoted-printable decoded)"))
-        print("─" * 60)
         for u in body_urls:
             print(Colors.orange(f"  [URL] {u}"))
     else:
-        print(Colors.yellow("\n[!] No URLs found in email body."))
+        print(Colors.yellow("  [!] No URLs found in body."))
 
-    print("\n")
-    print(Colors.yellow("[*] Starting contextual analysis..."))
-    print(Colors.yellow("[*] Comparing Reply-to and From emails...."))
+    # ════════════════════ SCORING ════════════════════════════════
+    print(Colors.bold("\n[+] Authenticity Scoring"))
+    print("─" * 60)
+    score = 0
 
-    scoring_system = 0
+    from_domain     = _extract_domain(from_clean)
+    replyto_domain  = _extract_domain(replyto_clean)
+    return_domain   = _extract_domain(return_clean)
 
-    from_val   = cleaned_headers_list[2] if len(cleaned_headers_list) > 2 else 'N/A'
-    reply_val  = cleaned_headers_list[4] if len(cleaned_headers_list) > 4 else 'N/A'
-    return_val = cleaned_headers_list[1] if len(cleaned_headers_list) > 1 else 'N/A'
-
-    from_domain   = _extract_domain(from_val)
-    reply_domain  = _extract_domain(reply_val)
-    return_domain = _extract_domain(return_val)
-
+    # Free-mail check
     if from_domain and from_domain in FREE_MAIL_DOMAINS:
-        print(Colors.orange(f"[!] From domain is a free mail provider ({from_domain})."))
-        print(Colors.orange(f"    Anyone can register — treat with caution regardless of auth results."))
-        scoring_system -= 10
+        print(Colors.orange(f"  [!] From domain is a free-mail provider ({from_domain}) → -10"))
+        score -= 10
 
-    if from_domain and reply_domain:
-        from_parser     = from_val.split('@')
-        reply_to_parser = reply_val.split('@')
-
-        from_dom_clean  = _normalize_domain(from_parser[1])
-        reply_dom_clean = _normalize_domain(reply_to_parser[1])
-
-        if from_dom_clean != reply_dom_clean:
-            scoring_system = 0
-            print(Colors.red(f"""
-                    \u26a0\ufe0f UUhh!
-                    The From & Reply-to not matching..
-                    Please check:
-                    {from_dom_clean}
-                    {reply_dom_clean}
-                    with scoring system {scoring_system} As we prefer it NULL.
-                """))
+    # From vs Reply-To
+    print(Colors.yellow("\n  [*] Checking From ↔ Reply-To…"))
+    if from_domain and replyto_domain:
+        fn = _normalize_domain(from_domain)
+        rn = _normalize_domain(replyto_domain)
+        if fn != rn:
+            score = 0   # hard reset — textbook phishing tell
+            print(Colors.red(f"  ⚠️  MISMATCH  From:{fn}  Reply-To:{rn}  → score reset to 0"))
         else:
-            scoring_system += 20
-            print(Colors.green(f"[+] Both From & Reply-to matching. Awesome :)"))
-            print(Colors.blue(f"Scoring system up to {scoring_system}."))
+            score += 20
+            print(Colors.green(f"  [✓] From & Reply-To match ({fn}) → +20  (score {score})"))
     else:
-        print(Colors.yellow("[!] Skipping From/Reply-To comparison — one or both headers missing."))
+        print(Colors.yellow("  [!] One or both headers missing — skipping comparison."))
 
-    print("\n")
-    print(Colors.cyan("Moving to next contextual analysis..."))
+    # Auth results block
+    print(Colors.yellow("\n  [*] Parsing Authentication-Results…"))
+    auth_m = re.search(r'Authentication-Results:.*?(?=\n\S|\Z)', content, re.DOTALL)
 
-    if return_val != 'N/A':
-        getdkim_ = re.compile(r'Authentication-Results:.*?(?=\n\S)', re.DOTALL)
-        dkim_block = getdkim_.search(content)
-
-        if not dkim_block:
-            print(Colors.yellow("[!] No Authentication-Results header found — skipping DKIM/SPF/DMARC."))
-            scoring_system -= 30
-        else:
-            matchdkim_ = dkim_block.group()
-            print(Colors.blue("Running the analysis...\n"))
-
-            getdkim_rule_ = re.compile(r'dkim=\S+', re.IGNORECASE)
-            dkim_hit      = getdkim_rule_.search(matchdkim_)
-            getdkim_match_ = dkim_hit.group() if dkim_hit else None
-
-            if getdkim_match_:
-                check_dkim_pass = getdkim_match_.split('=')
-                print(Colors.yellow("[*] Starting The scoring system..."))
-                moveto_contextual = input(Colors.yellow("Press enter to start contextual analysis starting with DKIM.."))
-                print(moveto_contextual)
-                if check_dkim_pass[1].lower() == 'pass':
-                    scoring_system += 20
-                    print(Colors.green(f"[+] DKIM Signature is {check_dkim_pass[1]}"))
-                    print(Colors.blue(f"Score is set up to {scoring_system}.\n"))
-                else:
-                    scoring_system -= 20
-                    print(Colors.red(f""" ===== \u26a0\ufe0f UUHHH ======
-                        The DKIM Signature is {check_dkim_pass[1]} is not valid
-                        Scoring system is now {scoring_system}...
-                        """))
-            else:
-                scoring_system -= 20
-                print(Colors.red("[!] DKIM Signature not found...."))
-                print(Colors.red(f"Score is down to {scoring_system}."))
-
-            if return_domain and from_domain:
-                get_return_domain = re.search(r'@[\w.\-]+', return_val)
-                get_from_domain   = re.search(r'@[\w.\-]+', from_val)
-
-                if get_return_domain and get_from_domain:
-                    join_get_pure_return_domain = _normalize_domain(get_return_domain.group().lstrip('@'))
-                    join_get_pure_from_domain   = _normalize_domain(get_from_domain.group().lstrip('@'))
-
-                    getto_comparison = input(Colors.yellow("Press Enter to move to Return-Path & Path comparison.."))
-                    print(getto_comparison)
-                    if join_get_pure_return_domain == join_get_pure_from_domain:
-                        scoring_system += 15
-                        print(Colors.green("""[+] Both From & Return-Path domain matches..."""))
-                        print(Colors.blue(f"Great indicator...now scoring system up to {scoring_system}\n"))
-                    else:
-                        print(Colors.red(f"""\u26a0\ufe0f UUUHHH - The From & Return-Path domains are not match please check...
-                    {join_get_pure_return_domain}
-                    {join_get_pure_from_domain}
-                    """))
-                        scoring_system = scoring_system - 15
-                else:
-                    print(Colors.yellow("[!] Could not parse Return-Path or From domain."))
-                    scoring_system -= 15
-            else:
-                print(Colors.yellow("[!] Skipping Return-Path/From comparison — missing domain info."))
-                scoring_system -= 15
-
-            getdmarc_rule_ = re.compile(r'dmarc=\S+', re.IGNORECASE)
-            dmarc_hit      = getdmarc_rule_.search(matchdkim_)
-            getdmarc_match_ = dmarc_hit.group() if dmarc_hit else None
-
-            getto_dmarc = input(Colors.yellow("Press Enter to move to DMARC analysis...."))
-            print(getto_dmarc)
-            if getdmarc_match_:
-                check_dmarc_pass = getdmarc_match_.split('=')
-                if check_dmarc_pass[1].lower() == 'pass':
-                    scoring_system += 10
-                    print(Colors.green(f"[+] DMARC is {check_dmarc_pass[1]}"))
-                    print(Colors.blue(f"[+] Score is set up now to {scoring_system}\n"))
-                else:
-                    scoring_system -= 10
-                    print(Colors.red(f""" ===== \u26a0\ufe0f UUHHH ======
-                        The DMARC Signature is {check_dmarc_pass[1]} is not valid
-                        Scoring system is now {scoring_system}...
-                        """))
-            else:
-                scoring_system -= 10
-                print(Colors.red("[!] DMARC Signature not found...."))
-                print(Colors.red(f"Score is down to {scoring_system}."))
-
-            getspf_rule_ = re.compile(r'spf=\S+', re.IGNORECASE)
-            spf_hit      = getspf_rule_.search(matchdkim_)
-            getspf_match_ = spf_hit.group() if spf_hit else None
-
-            getto_spf = input(Colors.yellow("Press Enter to move to SPF analysis...."))
-            print(getto_spf)
-            if getspf_match_:
-                check_spf_pass = getspf_match_.split('=')
-                if check_spf_pass[1].lower() == 'pass':
-                    scoring_system += 15
-                    print(Colors.green(f"[+] SPF is {check_spf_pass[1]}"))
-                    print(Colors.blue(f"Scoring system is having great score up to {scoring_system}"))
-                else:
-                    scoring_system -= 10
-                    print(Colors.red(f""" ===== \u26a0\ufe0f UUHHH ======
-                        The SPF Signature is {check_spf_pass[1]} is not valid
-                        Scoring system is now {scoring_system}...
-                        """))
-            else:
-                scoring_system -= 10
-                print(Colors.red("[!] SPF Signature not found...."))
-                print(Colors.red(f"Score is down to {scoring_system}."))
+    if not auth_m:
+        print(Colors.yellow("  [!] No Authentication-Results header found → -30"))
+        score -= 30
     else:
-        print(Colors.yellow("[!] Return-Path missing — skipping DKIM/SPF/DMARC block."))
-        scoring_system -= 30
+        auth_block = auth_m.group()
 
-    suggest_further_request = input(Colors.yellow("Do you want to query Virus Total (yes / no):    ")).lower()
-    print(suggest_further_request)
-
-    if suggest_further_request == 'yes':
-        print(Colors.yellow("[*] Extracting DKIM d= paramter and From Domain before..."))
-        getdomains_  = re.compile(r'Authentication-Results:.*?(?=\n\S)', re.DOTALL)
-        domain_block = getdomains_.search(content)
-
-        if not domain_block:
-            print(Colors.yellow("[!] No Authentication-Results found — cannot extract domain for VT lookup."))
-        elif not from_domain:
-            print(Colors.yellow("[!] From header missing — cannot run VT lookup."))
-        else:
-            matchdomain        = domain_block.group()
-            get_thedomain      = re.compile(r'@[\w.\-]+', re.IGNORECASE)
-            match_thedomain    = get_thedomain.search(matchdomain)
-            match_thedomain_from = get_thedomain.search(from_val)
-
-            if not match_thedomain or not match_thedomain_from:
-                print(Colors.yellow("[!] Could not extract domain — skipping VT lookup."))
+        # DKIM
+        input(Colors.yellow("  Press Enter → DKIM analysis…"))
+        dkim_m = re.search(r'dkim=(\w+)', auth_block, re.IGNORECASE)
+        if dkim_m:
+            dval = dkim_m.group(1).lower()
+            if dval == 'pass':
+                score += 20
+                print(Colors.green( f"  [✓] DKIM: {dval} → +20  (score {score})"))
             else:
-                strip_at_from_domain   = match_thedomain.group().lstrip('@')
-                strip_at_from_domain_2 = match_thedomain_from.group().lstrip('@')
+                score -= 20
+                print(Colors.red(   f"  [!] DKIM: {dval} → -20  (score {score})"))
+        else:
+            score -= 20
+            print(Colors.red(f"  [!] DKIM: not found → -20  (score {score})"))
 
-                if strip_at_from_domain_2 == strip_at_from_domain:
-                    print(Colors.yellow(f"""
-                    Both From & DKIM Domain matches...
-                    {strip_at_from_domain_2}
-                    {strip_at_from_domain}
-                    """))
+        # Return-Path vs From
+        input(Colors.yellow("  Press Enter → Return-Path vs From comparison…"))
+        if return_domain and from_domain:
+            rn = _normalize_domain(return_domain)
+            fn = _normalize_domain(from_domain)
+            if rn == fn:
+                score += 15
+                print(Colors.green( f"  [✓] Return-Path & From match ({rn}) → +15  (score {score})"))
+            else:
+                score -= 15
+                print(Colors.red(   f"  [!] Return-Path ({rn}) ≠ From ({fn}) → -15  (score {score})"))
+        else:
+            score -= 15
+            print(Colors.yellow(f"  [!] Missing domain info → -15  (score {score})"))
 
-                run_the_request = request_reputation(f"https://{strip_at_from_domain_2}")
-                if run_the_request:
-                    url_ = run_the_request['url']
+        # DMARC
+        input(Colors.yellow("  Press Enter → DMARC analysis…"))
+        dmarc_m = re.search(r'dmarc=(\w+)', auth_block, re.IGNORECASE)
+        if dmarc_m:
+            dval = dmarc_m.group(1).lower()
+            if dval == 'pass':
+                score += 10
+                print(Colors.green( f"  [✓] DMARC: {dval} → +10  (score {score})"))
+            else:
+                score -= 10
+                print(Colors.red(   f"  [!] DMARC: {dval} → -10  (score {score})"))
+        else:
+            score -= 10
+            print(Colors.red(f"  [!] DMARC: not found → -10  (score {score})"))
 
-                    if url_.startswith("http://") and not url_.startswith("https://"):
-                        print(Colors.orange(
-                            f"[!] Warning: {url_} only responds on HTTP — no HTTPS/SSL certificate detected"))
-                        print(Colors.orange(f"    Legitimate sites almost always serve HTTPS. Phishing indicator!"))
-                        scoring_system -= 10
+        # SPF
+        input(Colors.yellow("  Press Enter → SPF analysis…"))
+        spf_m = re.search(r'spf=(\w+)', auth_block, re.IGNORECASE)
+        if spf_m:
+            sval = spf_m.group(1).lower()
+            if sval == 'pass':
+                score += 15
+                print(Colors.green( f"  [✓] SPF: {sval} → +15  (score {score})"))
+            else:
+                score -= 10
+                print(Colors.red(   f"  [!] SPF: {sval} → -10  (score {score})"))
+        else:
+            score -= 10
+            print(Colors.red(f"  [!] SPF: not found → -10  (score {score})"))
 
-                    m = run_the_request['malicious']
-                    s = run_the_request['suspicious']
-                    h = run_the_request['harmless']
-                    u = run_the_request['Undetected']
+    # ── VirusTotal ────────────────────────────────────────────────
+    print(Colors.bold("\n[+] VirusTotal Reputation Check"))
+    print("─" * 60)
+    do_vt = input(Colors.yellow("  Run VirusTotal checks? (yes/no): ")).strip().lower()
 
-                    if m > 0 and s > 0:
-                        print(Colors.red(f"[!] {url_} flagged as MALICIOUS ({m}) and SUSPICIOUS ({s})"))
-                        scoring_system -= 50
-                    elif m > 0:
-                        print(Colors.red(f"[!] {url_} flagged as MALICIOUS — {m} detections"))
-                        scoring_system -= 30
-                    elif s > 0:
-                        print(Colors.orange(f"[!] {url_} flagged as SUSPICIOUS — {s} flags"))
-                        scoring_system -= 15
+    if do_vt == 'yes':
+
+        # From domain
+        if from_domain:
+            print(Colors.yellow(f"\n  [→] Checking From-domain: {from_domain}"))
+            vt = request_reputation(from_domain)
+            if vt:
+                _print_vt_result(vt)
+                score = _apply_vt_score(vt, score)
+            else:
+                print(Colors.yellow("  [!] No VT result for From-domain."))
+
+        # Each IP in the Received chain
+        if received_ips:
+            do_ip = input(Colors.yellow("  Check each Received-chain IP on VT? (yes/no): ")).strip().lower()
+            if do_ip == 'yes':
+                for hop, ip in received_ips:
+                    print(Colors.cyan(f"\n  [→] Hop {hop} IP: {ip}"))
+                    vt = request_reputation(ip)   # bare IP — no https://
+                    if vt:
+                        _print_vt_result(vt)
+                        score = _apply_vt_score(vt, score)
                     else:
-                        print(Colors.green(f"[+] {url_} looks clean — Harmless: {h} | Undetected: {u}"))
-                        scoring_system += 10
-                else:
-                    print(Colors.yellow("[!] VT lookup returned no result."))
+                        print(Colors.yellow(f"  [!] No VT result for {ip}"))
 
+        # Body URLs
         if body_urls:
-            vt_body = input(Colors.yellow("\n[*] Also run VT on URLs found in email body? (yes/no):  ")).lower()
-            print(vt_body)
-            if vt_body == 'yes':
-                for body_url in body_urls:
-                    print(Colors.cyan(f"\n[*] Querying VT for: {body_url}"))
-                    result = request_reputation(body_url)
-                    if result:
-                        m = result['malicious']
-                        s = result['suspicious']
-                        h = result['harmless']
-                        u = result['Undetected']
-                        if m > 0:
-                            print(Colors.red(f"[!] MALICIOUS — {m} detections: {body_url}"))
-                            scoring_system -= 20
-                        elif s > 0:
-                            print(Colors.orange(f"[!] SUSPICIOUS — {s} flags: {body_url}"))
-                            scoring_system -= 10
-                        else:
-                            print(Colors.green(f"[+] Clean — Harmless: {h} | Undetected: {u}"))
+            do_url = input(Colors.yellow("  Check body URLs on VT? (yes/no): ")).strip().lower()
+            if do_url == 'yes':
+                for url in body_urls:
+                    print(Colors.cyan(f"\n  [→] URL: {url}"))
+                    vt = request_reputation(url)
+                    if vt:
+                        _print_vt_result(vt)
+                        score = _apply_vt_score(vt, score)
                     else:
-                        print(Colors.yellow(f"[!] No result for {body_url}"))
-
-    print(f"Final Score is: {scoring_system}")
-    if scoring_system >= 90:
-        print(Colors.green(f"[+] Amazing! Final Score: {scoring_system} — Strong legitimacy indicators"))
-    elif scoring_system >= 50:
-        print(Colors.cyan(f"[+] Good. Final Score: {scoring_system} — Mostly legitimate"))
-    elif scoring_system >= 30:
-        print(Colors.orange(f"[!] Weak. Final Score: {scoring_system} — Some suspicious indicators"))
+                        print(Colors.yellow(f"  [!] No VT result for {url}"))
     else:
-        print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
+        print(Colors.yellow("  [*] Skipping VirusTotal."))
 
-    if suggest_further_request == 'no':
-        print(Colors.yellow(f"[*] Finishing up with scoring system! to {scoring_system}"))
-        if scoring_system >= 90:
-            print(Colors.green(f"[+] Amazing! Final Score: {scoring_system} — Strong legitimacy indicators"))
-        elif scoring_system >= 50:
-            print(Colors.cyan(f"[+] Good. Final Score: {scoring_system} — Mostly legitimate"))
-        elif scoring_system >= 30:
-            print(Colors.orange(f"[!] Weak. Final Score: {scoring_system} — Some suspicious indicators"))
-        else:
-            print(Colors.red(f"[!] Bad. Final Score: {scoring_system} — High phishing likelihood"))
+    # ── Final verdict printed ONCE ────────────────────────────────
+    _print_verdict(score)
 
-    attachement_analyzer(file)
+    # ── Attachments ───────────────────────────────────────────────
+    attachment_analyzer(file)

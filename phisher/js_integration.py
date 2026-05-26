@@ -12,44 +12,51 @@ from dotenv import load_dotenv
 import sys
 from colors.color import Colors
 
+load_dotenv()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-URL_SHORTENERS_LIST = [
+# ── Constants ────────────────────────────────────────────────────
+URL_SHORTENERS = {
     "bit.ly", "tinyurl.com", "t.ly", "rebrand.ly", "is.gd", "goo.su",
     "qrco.de", "clck.ru", "cutt.ly", "rb.gy", "dub.sh", "short.io",
     "ow.ly", "tiny.cc", "spoo.me", "kutt.it", "buff.ly", "bitly.com",
     "shorte.st", "adf.ly", "u.to", "git.io", "t.co", "fb.me", "t.me",
-    "shortcm.li", "tny.im", "chilp.it", "y2u.be", "shorturl.at"
-]
+    "shortcm.li", "tny.im", "chilp.it", "y2u.be", "shorturl.at",
+}
 
-SUSPICIOUS_EXTENSIONS = [
+SUSPICIOUS_EXTS = [
     '.exe', '.dll', '.bat', '.cmd', '.ps1', '.vbs', '.jar', '.scr',
-    '.hta', '.msi', '.iso', '.lnk', '.wsf', '.sh', '.docm', '.xlsm'
+    '.hta', '.msi', '.iso', '.lnk', '.wsf', '.sh', '.docm', '.xlsm',
+    '.js', '.jse', '.vbe', '.pif', '.reg', '.cpl',
 ]
 
 NOISE_DOMAINS = [
     "jquery", "bootstrap", "googleapis", "gstatic", "w3.org",
-    "schema.org", "facebook.net", "cdn.jsdelivr", "unpkg.com", "cdnjs"
+    "schema.org", "facebook.net", "cdn.jsdelivr", "unpkg.com", "cdnjs",
 ]
 
 PHISHING_PATTERNS = [
-    (r"\blogin\b",                                    "Login form detected"),
-    (r"\bpassword\b",                                 "Password field detected"),
-    (r"\bcredential",                                 "Credential harvesting indicator"),
-    (r"\bsignin\b|sign[- ]in",                        "Sign-in form detected"),
-    (r"\bverif",                                      "Verification page detected"),
-    (r"update.*payment|payment.*update",              "Payment update page"),
-    (r"paypal",                                       "PayPal impersonation possible"),
-    (r"microsoft|office\s?365|outlook",               "Microsoft impersonation possible"),
-    (r"google|gmail",                                 "Google impersonation possible"),
-    (r"apple\.com|icloud",                            "Apple impersonation possible"),
-    (r"amazon",                                       "Amazon impersonation possible"),
-    (r"bankofamerica|wellsfargo|chase|hsbc|barclays",  "Banking impersonation possible"),
-    (r"docusign|dropbox|sharepoint",                  "Cloud service impersonation possible"),
+    (r"\blogin\b",                                      "Login form detected"),
+    (r"\bpassword\b",                                   "Password field detected"),
+    (r"\bcredential",                                   "Credential harvesting indicator"),
+    (r"\bsignin\b|sign[- ]in",                          "Sign-in form detected"),
+    (r"\bverif",                                        "Verification page detected"),
+    (r"update.*payment|payment.*update",                "Payment update page"),
+    (r"paypal",                                         "PayPal impersonation possible"),
+    (r"microsoft|office\s?365|outlook",                 "Microsoft impersonation possible"),
+    (r"google|gmail",                                   "Google impersonation possible"),
+    (r"apple\.com|icloud",                              "Apple impersonation possible"),
+    (r"amazon",                                         "Amazon impersonation possible"),
+    (r"bankofamerica|wellsfargo|chase|hsbc|barclays",   "Banking impersonation possible"),
+    (r"docusign|dropbox|sharepoint",                    "Cloud service impersonation possible"),
+    (r"account.*suspend|suspend.*account",              "Account suspension threat"),
+    (r"urgent|immediate.{0,20}action",                  "Urgency language detected"),
 ]
 
 BROWSER_HEADERS = {
-    "User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                 "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                 "Chrome/124.0.0.0 Safari/537.36",
     "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language":           "en-US,en;q=0.9",
     "Accept-Encoding":           "gzip, deflate",
@@ -58,28 +65,45 @@ BROWSER_HEADERS = {
     "Cache-Control":             "max-age=0",
 }
 
+JS_REDIRECT_PATTERNS = [
+    r'window\.location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\']',
+    r'(?:location|document\.location)\.(?:replace|assign)\s*\(\s*["\']([^"\']{8,})["\']',
+    r'(?:location|document\.location|self\.location|top\.location|parent\.location)\s*=\s*["\']([^"\']{8,})["\']',
+    r'window\.open\s*\(\s*["\']([^"\']{8,})["\']',
+    r'history\.pushState\s*\([^,]*,[^,]*,\s*["\']([^"\']{8,})["\']',
+    r'setTimeout\s*\(.*?(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\'].*?\d+\s*\)',
+    r'setInterval\s*\(.*?(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\'].*?\d+\s*\)',
+    r'fetch\s*\(\s*["\']([^"\']{8,})["\']',
+]
 
-def _resolve_eml(file):
+
+# ── Path resolver ─────────────────────────────────────────────────
+def _resolve_eml(file: str) -> str:
     candidate = os.path.expanduser(str(file).strip())
     if candidate.endswith('.eml'):
         candidate = candidate[:-4]
 
-    def try_path(p):
+    def _try(p: Path) -> Path | None:
         full = Path(str(p) + '.eml')
         return full if full.exists() else None
 
-    return (
-        str(found) if (found := try_path(candidate)) else
-        str(found) if (found := try_path(Path.cwd() / Path(candidate).name)) else
-        str(found) if (found := try_path(Path.home() / 'Desktop' / Path(candidate).name)) else
-        (_ for _ in ()).throw(FileNotFoundError(
-            f"[!] Could not find '{Path(candidate).name}.eml' in given path, "
-            f"{Path.cwd()}, or Desktop."
-        ))
+    for base in [
+        Path(candidate),
+        Path.cwd() / Path(candidate).name,
+        Path.home() / 'Desktop' / Path(candidate).name,
+        Path('/root/Desktop') / Path(candidate).name,
+    ]:
+        found = _try(base)
+        if found:
+            return str(found)
+
+    raise FileNotFoundError(
+        f"[!] Could not find '{Path(candidate).name}.eml'"
     )
 
 
-def _clean_url(url):
+# ── URL helpers ───────────────────────────────────────────────────
+def _clean_url(url: str) -> str:
     url = url.strip().rstrip(".,;)'\">/")
     url = re.sub(r'=\n', '', url)
     url = url.replace('=3D', '=').replace('=3d', '=')
@@ -87,30 +111,64 @@ def _clean_url(url):
     return unquote(url)
 
 
-def _is_suspicious_ext(url):
+def _url_key(u: str) -> str:
+    """Canonical key for deduplication — strips query params."""
+    return re.sub(r'[?&][^=]+=\S*', '', u).rstrip('?&')
+
+
+def _is_suspicious_ext(url: str) -> str | None:
     path = urlparse(url).path.lower()
-    return next((e for e in SUSPICIOUS_EXTENSIONS if path.endswith(e)), None)
+    return next((e for e in SUSPICIOUS_EXTS if path.endswith(e)), None)
 
 
-def _url_key(u):
-    key = re.sub(r'[?&][^=]+=\S*', '', u).rstrip('?&')
-    return key
+def _is_shortener(url: str) -> str | None:
+    return next((s for s in URL_SHORTENERS if s in url), None)
 
 
-def _collect_all_redirects(script_text, raw_content, get_html):
-    found = []
+# ── URL expander (fixed: now sends the url field) ─────────────────
+def expand_url(url: str) -> str | None:
+    token = os.getenv("TOKEN_EXPANDER")
+    if not token:
+        print(Colors.yellow("  [!] TOKEN_EXPANDER not set in .env — cannot expand."))
+        return None
+    try:
+        res = requests.post(
+            "https://onesimpleapi.com/api/unshorten",
+            headers={
+                "Content-Type":  "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            # FIX: original sent {"output":"json"} with NO url field
+            json={"url": url, "output": "json"},
+            timeout=10,
+        )
+        if res.ok:
+            data = res.json()
+            # API returns {"result": "https://..."} or plain string
+            expanded = data.get("result") or data.get("url") or (data if isinstance(data, str) else None)
+            return str(expanded) if expanded else None
+        else:
+            print(Colors.yellow(f"  [!] Expander returned HTTP {res.status_code}"))
+            return None
+    except Exception as e:
+        print(Colors.red(f"  [!] expand_url error: {e}"))
+        return None
 
-    JS_REDIRECT_PATTERNS = [
-        r'window\.location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\']',
-        r'(?:location|document\.location)\.(?:replace|assign)\s*\(\s*["\']([^"\']{8,})["\']',
-        r'(?:location|document\.location|self\.location|top\.location|parent\.location)\s*=\s*["\']([^"\']{8,})["\']',
-        r'window\.open\s*\(\s*["\']([^"\']{8,})["\']',
-        r'history\.pushState\s*\([^,]*,[^,]*,\s*["\']([^"\']{8,})["\']',
-        r'setTimeout\s*\(.*?(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\'].*?\d+\s*\)',
-        r'setInterval\s*\(.*?(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\'].*?\d+\s*\)',
-        r'fetch\s*\(\s*["\']([^"\']{8,})["\']',
-    ]
 
+# ── Collect all redirect / URL sources from parsed HTML ──────────
+def _collect_all_redirects(
+        script_text: str,
+        raw_content: str,
+        soup: BeautifulSoup,
+) -> list[tuple[str, str]]:
+    """
+    Returns a deduplicated list of (label, url) from every source:
+    JS redirect patterns, anchor hrefs, form actions, meta refresh,
+    iframes, QP-decoded hrefs, plain-text body URLs.
+    """
+    found: list[tuple[str, str]] = []
+
+    # JS patterns in script text
     if script_text:
         for pat in JS_REDIRECT_PATTERNS:
             for m in re.finditer(pat, script_text, re.IGNORECASE | re.DOTALL):
@@ -118,7 +176,8 @@ def _collect_all_redirects(script_text, raw_content, get_html):
                 if url.startswith('http'):
                     found.append(('JS redirect', url))
 
-    for tag in get_html.find_all('a', href=True):
+    # <a href>
+    for tag in soup.find_all('a', href=True):
         href = _clean_url(tag['href'])
         if href.startswith('http'):
             found.append(('anchor href', href))
@@ -127,37 +186,50 @@ def _collect_all_redirects(script_text, raw_content, get_html):
             for m in re.finditer(r'location(?:\.href)?\s*=\s*["\']([^"\']+)["\']', onclick):
                 found.append(('onclick redirect', _clean_url(m.group(1))))
 
-    for tag in get_html.find_all('form', action=True):
+    # <form action>
+    for tag in soup.find_all('form', action=True):
         action = _clean_url(tag['action'])
         if action.startswith('http'):
             found.append(('form action', action))
 
-    for tag in get_html.find_all('meta'):
+    # <meta http-equiv="refresh">
+    for tag in soup.find_all('meta'):
         if tag.get('http-equiv', '').lower() == 'refresh':
             content_val = tag.get('content', '')
             m = re.search(r'url=([^\s;]+)', content_val, re.IGNORECASE)
             s = re.search(r'^(\d+)', content_val)
             if m:
-                found.append((f'meta refresh ({s.group(1) if s else "?"}s)', _clean_url(m.group(1))))
+                found.append((
+                    f'meta refresh ({s.group(1) if s else "?"}s)',
+                    _clean_url(m.group(1))
+                ))
 
-    for tag in get_html.find_all('iframe', src=True):
+    # <iframe src>
+    for tag in soup.find_all('iframe', src=True):
         src = _clean_url(tag['src'])
         if src.startswith('http'):
             found.append(('iframe src', src))
 
-    qp = re.sub(r'=\n', '', quopri.decodestring(raw_content.encode()).decode('utf-8', errors='replace') if raw_content else '')
-    qp = qp.replace('=3D', '=').replace('=3d', '=')
-    for m in re.finditer(r'href\s*=\s*["\']?(https?://[^\s"\'<>]+)', qp, re.IGNORECASE):
-        found.append(('QP decoded href', _clean_url(m.group(1))))
+    # QP-decoded hrefs
+    try:
+        qp = quopri.decodestring(raw_content.encode()).decode('utf-8', errors='replace')
+        qp = re.sub(r'=\n', '', qp).replace('=3D', '=').replace('=3d', '=')
+        for m in re.finditer(r'href\s*=\s*["\']?(https?://[^\s"\'<>]+)', qp, re.IGNORECASE):
+            found.append(('QP decoded href', _clean_url(m.group(1))))
+    except Exception:
+        pass
 
+    # Plain <URL> in angle brackets
     for m in re.finditer(r'<(https?://[^\s>]+)>', raw_content):
         found.append(('plain text URL', _clean_url(m.group(1))))
 
+    # Bare body URLs
     for m in re.finditer(r'(?<!\w)(https?://[^\s<>"\')\]]{10,})', raw_content):
         found.append(('body URL', _clean_url(m.group(1))))
 
-    unique = []
-    seen = set()
+    # Deduplicate
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for label, url in found:
         key = _url_key(url)
         if key not in seen and len(url) > 8:
@@ -167,268 +239,277 @@ def _collect_all_redirects(script_text, raw_content, get_html):
     return unique
 
 
-def _scan_html_for_urls(html_text, source_label="file"):
-    print(Colors.bold(f"\n[+] Scanning {source_label} for IOCs..."))
+# ── Scan HTML response for IOCs ───────────────────────────────────
+def _scan_html_for_urls(html_text: str, source_label: str = "page"):
+    print(Colors.bold(f"\n  [+] Scanning {source_label} for IOCs..."))
 
     title = re.search(r'<title[^>]*>([^<]+)</title>', html_text, re.IGNORECASE)
     if title:
-        print(Colors.cyan(f"  [*] Page title: {title.group(1).strip()}"))
+        print(Colors.cyan(f"    [*] Page title: {title.group(1).strip()}"))
 
     for pattern, label in PHISHING_PATTERNS:
         if re.search(pattern, html_text, re.IGNORECASE):
-            print(Colors.red(f"  [!] {label}"))
+            print(Colors.red(f"    [!] {label}"))
 
     obf = []
-    if 'eval('             in html_text: obf.append('eval()')
-    if 'atob('             in html_text: obf.append('atob()')
-    if 'String.fromCharCode' in html_text: obf.append('String.fromCharCode()')
-    if 'unescape('         in html_text: obf.append('unescape()')
+    for marker, name in [
+        ('eval(',             'eval()'),
+        ('atob(',             'atob()'),
+        ('String.fromCharCode', 'String.fromCharCode()'),
+        ('unescape(',         'unescape()'),
+        ('document.write(',   'document.write()'),
+    ]:
+        if marker in html_text:
+            obf.append(name)
     if obf:
-        print(Colors.orange(f"  [!] JS obfuscation: {', '.join(obf)}"))
+        print(Colors.orange(f"    [!] JS obfuscation: {', '.join(obf)}"))
 
-    JS_PATTERNS = [
-        (r'window\.location(?:\.href)?\s*=\s*["\']([^"\']{8,})["\']',   "window.location"),
-        (r'location\.(?:replace|assign)\s*\(\s*["\']([^"\']{8,})["\']',  "location.replace/assign"),
-        (r'<meta[^>]+refresh[^>]+url=([^\s"\']{8,})',                     "meta refresh"),
-        (r'(?:redirect|destination|return_url|next|goto)\s*[=:]\s*["\']?(https?://[^"\'<>\s&]{8,})', "redirect param"),
-        (r'atob\(["\']([A-Za-z0-9+/=]{20,})["\']',                       "atob() encoded"),
+    forms = re.findall(r'<form[^>]+action=["\']?([^"\'>\s]+)', html_text, re.IGNORECASE)
+    if forms:
+        print(Colors.orange("    [!] Form action(s):"))
+        for fm in set(forms):
+            print(Colors.orange(f"        → {fm}"))
+
+    ext_scripts = [
+        s for s in re.findall(
+            r'<script[^>]+src=["\']?(https?://[^"\'<>\s]+)', html_text, re.IGNORECASE
+        )
+        if not any(n in s for n in NOISE_DOMAINS)
     ]
-
-    js_hits = []
-    seen_js = set()
-    for pat, lbl in JS_PATTERNS:
-        for m in re.finditer(pat, html_text, re.IGNORECASE | re.DOTALL):
-            val = m.group(1).strip().rstrip(".,;)'\">/")
-            if lbl == "atob() encoded":
-                try:
-                    val = f"{val} => {base64.b64decode(val + '==').decode('utf-8', errors='replace')}"
-                except Exception:
-                    pass
-            if val not in seen_js:
-                seen_js.add(val)
-                js_hits.append((lbl, val))
-
-    if js_hits:
-        print(Colors.bold(f"  [+] JS redirect / encoded values ({len(js_hits)}):"))
-        for lbl, val in js_hits:
-            print(Colors.red(f"      [{lbl}] {val}"))
+    if ext_scripts:
+        print(Colors.orange(f"    [!] External scripts ({len(ext_scripts)}):"))
+        for s in ext_scripts:
+            print(Colors.orange(f"        {s}"))
 
     all_urls = list(dict.fromkeys(
         u.rstrip(".,;)'\">/")
         for u in re.findall(r'https?://[^\s"\'<>\]\[()]+', html_text)
     ))
     external = [u for u in all_urls if not any(n in u for n in NOISE_DOMAINS)]
-
-    forms = re.findall(r'<form[^>]+action=["\']?([^"\'>\s]+)', html_text, re.IGNORECASE)
-    if forms:
-        print(Colors.orange("  [!] Form actions:"))
-        for fm in set(forms):
-            print(Colors.orange(f"      -> {fm}"))
-
-    hidden = re.findall(
-        r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
-        html_text, re.IGNORECASE
-    )
-    if hidden:
-        print(Colors.yellow("  [*] Hidden inputs:"))
-        for name, val in hidden[:8]:
-            print(Colors.yellow(f"      {name} = {val[:100]}"))
-
-    ext_scripts = [
-        s for s in re.findall(r'<script[^>]+src=["\']?(https?://[^"\'<>\s]+)', html_text, re.IGNORECASE)
-        if not any(n in s for n in NOISE_DOMAINS)
-    ]
-    if ext_scripts:
-        print(Colors.orange(f"  [!] External scripts ({len(ext_scripts)}):"))
-        for s in ext_scripts:
-            print(Colors.orange(f"      {s}"))
-
     if external:
-        print(Colors.bold(f"  [+] All external URLs ({len(external)}):"))
+        print(Colors.bold(f"    [+] External URLs found ({len(external)}):"))
         for u in external:
-            flag = f" <-- {_is_suspicious_ext(u)}" if _is_suspicious_ext(u) else ""
-            print(Colors.red(f"      {u}{flag}"))
-    else:
-        print(Colors.yellow("  [!] No external URLs found in response"))
+            flag = f"  ← SUSPICIOUS EXT: {_is_suspicious_ext(u)}" if _is_suspicious_ext(u) else ""
+            short = f"  ← SHORTENER: {_is_shortener(u)}" if _is_shortener(u) else ""
+            print(Colors.red(f"        {u}{flag}{short}"))
 
 
-def _follow_redirect_chain(url):
-    print(Colors.yellow(f"\n[*] Following: {url}"))
+# ── Follow redirect chain ─────────────────────────────────────────
+def _follow_redirect_chain(url: str):
+    print(Colors.yellow(f"\n  [*] Following redirect chain for: {url}"))
     session = requests.Session()
-    session.max_redirects = 15
+    session.max_redirects = 20
 
-    # Step 1: HEAD — catch immediate Location header
+    # HEAD first — catches immediate 301/302 Location header
     try:
-        r = session.head(url, headers=BROWSER_HEADERS, timeout=8, verify=False, allow_redirects=False)
+        r = session.head(url, headers=BROWSER_HEADERS, timeout=8,
+                         verify=False, allow_redirects=False)
         loc = r.headers.get("Location")
         if loc:
-            print(Colors.green(f"  [+] HEAD Location: {loc}"))
+            print(Colors.green(f"  [→] HEAD Location header: {loc}"))
     except Exception:
         pass
 
-    # Step 2: GET — follow full chain
+    # Full GET — follows all HTTP-level redirects
     try:
-        resp = session.get(url, headers=BROWSER_HEADERS, timeout=15, verify=False, allow_redirects=True)
-        chain = [r.url for r in resp.history] + [resp.url]
-
-        print(Colors.cyan(f"  HTTP chain ({len(chain)} hop{'s' if len(chain)>1 else ''}):"))
-        for i, hop in enumerate(chain):
-            marker = " <-- FINAL" if i == len(chain) - 1 else ""
-            print(Colors.cyan(f"    {i+1}. {hop}{marker}"))
-        print(Colors.cyan(f"  Status: {resp.status_code} | Server: {resp.headers.get('Server','?')}"))
-
-        loc_hdr = resp.headers.get("Location") or resp.headers.get("Refresh")
-        if loc_hdr:
-            print(Colors.orange(f"  [!] Location/Refresh header: {loc_hdr}"))
-
-        _scan_html_for_urls(resp.text, "response body")
-
-        # Step 3: urlscan.io passive lookup (no key needed)
-        domain = urlparse(resp.url).netloc
-        print(Colors.cyan(f"\n[*] Checking urlscan.io for existing scans of {domain}..."))
-        try:
-            sr = requests.get(
-                f"https://urlscan.io/api/v1/search/?q=page.domain:{domain}&size=3",
-                headers={"User-Agent": "ThreatIntel/1.0"}, timeout=8
-            )
-            if sr.status_code == 200:
-                results = sr.json().get("results", [])
-                if results:
-                    print(Colors.green(f"  [+] urlscan.io — {len(results)} scan(s) found:"))
-                    for res in results[:3]:
-                        final_u = res.get("page", {}).get("url", "N/A")
-                        scan_id = res.get("_id", "")
-                        print(Colors.cyan(f"    Final URL : {final_u}"))
-                        print(Colors.cyan(f"    Report    : https://urlscan.io/result/{scan_id}/"))
-                        if final_u and final_u != url:
-                            print(Colors.red(f"    [!] REDIRECTED TO: {final_u}"))
-                else:
-                    print(Colors.yellow(f"  [!] No scans found. Submit: https://urlscan.io/scan/#{url}"))
-        except Exception as e:
-            print(Colors.yellow(f"  [!] urlscan.io query failed: {e}"))
-
-        print(Colors.bold("\n[+] Suggestions if destination still unclear:"))
-        print(Colors.yellow(f"  1. urlscan.io  : https://urlscan.io/search/#page.domain:{domain}"))
-        print(Colors.yellow(f"  2. VirusTotal  : https://www.virustotal.com/gui/home/url"))
-        print(Colors.yellow(f"  3. ANY.RUN     : https://app.any.run"))
-        print(Colors.yellow(f"  4. curl -v -L --max-redirs 20 -A 'Mozilla/5.0' '{url}' 2>&1 | grep -i location"))
-        print(Colors.yellow(f"  5. Wayback     : https://web.archive.org/web/*/{url}"))
-
+        resp = session.get(url, headers=BROWSER_HEADERS, timeout=20,
+                           verify=False, allow_redirects=True)
     except requests.exceptions.TooManyRedirects:
-        print(Colors.red("  [!] Too many redirects."))
+        print(Colors.red("  [!] Too many redirects (>20). Aborting."))
+        return
     except requests.exceptions.ConnectionError as e:
         print(Colors.red(f"  [!] Connection error: {e}"))
+        return
     except requests.exceptions.Timeout:
-        print(Colors.red("  [!] Timed out."))
+        print(Colors.red("  [!] Request timed out."))
+        return
     except Exception as e:
-        print(Colors.red(f"  [!] Failed: {e}"))
-
-
-def _download_payload(url):
-    print(Colors.yellow(f"\n[*] Attempting to fetch: {url}"))
-    print(Colors.red("[!] WARNING: potentially malicious URL."))
-    if input(Colors.red("    Type 'YES' to confirm: ")).strip() != 'YES':
-        print(Colors.yellow("[*] Cancelled."))
+        print(Colors.red(f"  [!] Unexpected error: {e}"))
         return
 
-    save_dir = Path.cwd() / 'payloads'
-    save_dir.mkdir(exist_ok=True)
+    # Print HTTP hop chain
+    chain = [r.url for r in resp.history] + [resp.url]
+    print(Colors.cyan(f"\n  HTTP redirect chain ({len(chain)} hop{'s' if len(chain) > 1 else ''}):"))
+    for i, hop in enumerate(chain):
+        marker = "  ← FINAL DESTINATION" if i == len(chain) - 1 else ""
+        print(Colors.cyan(f"    {i+1}. {hop}{marker}"))
+    print(Colors.cyan(f"  Status: {resp.status_code}  |  Server: {resp.headers.get('Server', 'unknown')}"))
+
+    # Check for Location/Refresh header on final response
+    loc_hdr = resp.headers.get("Location") or resp.headers.get("Refresh")
+    if loc_hdr:
+        print(Colors.orange(f"  [!] Final response still has Location/Refresh: {loc_hdr}"))
+
+    # Scan the HTML body for IOCs
+    _scan_html_for_urls(resp.text, "final page body")
+
+    # ── NEW: extract JS/meta redirects from the fetched page ─────
+    soup = BeautifulSoup(resp.text, 'html.parser')
+    page_urls = _collect_all_redirects('', resp.text, soup)
+    # Filter to only redirects not already shown in chain
+    chain_urls = set(chain)
+    secondary = [(lbl, u) for lbl, u in page_urls if u not in chain_urls]
+    if secondary:
+        print(Colors.bold(f"\n  [+] JS/HTML redirects found inside the fetched page ({len(secondary)}):"))
+        print("  " + "─" * 56)
+        for lbl, u in secondary:
+            print(Colors.orange(f"    [{lbl}] {u}"))
+        print("  " + "─" * 56)
+        for lbl, u in secondary:
+            _handle_found_url(u, f"page-embedded {lbl}")
+
+    # urlscan.io passive lookup
+    domain = urlparse(resp.url).netloc
+    print(Colors.cyan(f"\n  [*] Checking urlscan.io for existing scans of {domain}…"))
+    try:
+        sr = requests.get(
+            f"https://urlscan.io/api/v1/search/?q=page.domain:{domain}&size=3",
+            headers={"User-Agent": "ThreatIntel/1.0"}, timeout=8
+        )
+        if sr.status_code == 200:
+            results = sr.json().get("results", [])
+            if results:
+                print(Colors.green(f"  [+] urlscan.io — {len(results)} existing scan(s):"))
+                for res in results[:3]:
+                    final_u = res.get("page", {}).get("url", "N/A")
+                    scan_id = res.get("_id", "")
+                    print(Colors.cyan(f"      Final URL : {final_u}"))
+                    print(Colors.cyan(f"      Report    : https://urlscan.io/result/{scan_id}/"))
+                    if final_u and final_u != url:
+                        print(Colors.red(f"      [!] Redirected to: {final_u}"))
+            else:
+                print(Colors.yellow(f"  [!] No existing scans. Submit manually:"))
+                print(Colors.yellow(f"      https://urlscan.io/scan/#{url}"))
+    except Exception as e:
+        print(Colors.yellow(f"  [!] urlscan.io query failed: {e}"))
+
+    print(Colors.bold("\n  [+] Further investigation tools:"))
+    print(Colors.yellow(f"    1. urlscan.io  → https://urlscan.io/search/#page.domain:{domain}"))
+    print(Colors.yellow(f"    2. VirusTotal  → https://www.virustotal.com/gui/home/url"))
+    print(Colors.yellow(f"    3. ANY.RUN     → https://app.any.run"))
+    print(Colors.yellow(f"    4. Wayback     → https://web.archive.org/web/*/{url}"))
+    print(Colors.yellow(f"    5. curl cmd    → curl -v -L --max-redirs 20 -A 'Mozilla/5.0' '{url}' 2>&1 | grep -i location"))
+
+
+# ── Download payload ──────────────────────────────────────────────
+def _download_payload(url: str):
+    print(Colors.yellow(f"\n  [*] Attempting payload download: {url}"))
+    print(Colors.red("  [!!!] WARNING: This may be a malicious file."))
+    confirm = input(Colors.red("        Type YES to confirm download: ")).strip()
+    if confirm != 'YES':
+        print(Colors.yellow("  [*] Download cancelled."))
+        return
+
+    # Save to Desktop/payloads/ so it's actually findable
+    desktop_candidates = [
+        Path.home() / 'Desktop' / 'payloads',
+        Path('/root/Desktop') / 'payloads',
+        Path.cwd() / 'payloads',
+    ]
+    save_dir = next(
+        (d.parent for d in desktop_candidates if d.parent.exists()),
+        Path.cwd()
+    ) / 'payloads'
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         session = requests.Session()
-        session.max_redirects = 10
-        resp = session.get(url, headers=BROWSER_HEADERS, timeout=15,
+        session.max_redirects = 15
+        resp = session.get(url, headers=BROWSER_HEADERS, timeout=20,
                            verify=False, allow_redirects=True, stream=True)
 
         if resp.url != url:
             print(Colors.orange(f"  [!] Followed redirect to: {resp.url}"))
 
-        content_type = resp.headers.get('Content-Type', 'unknown')
-        print(Colors.cyan(f"  [*] Status       : {resp.status_code}"))
-        print(Colors.cyan(f"  [*] Content-Type : {content_type}"))
-        print(Colors.cyan(f"  [*] Server       : {resp.headers.get('Server', '?')}"))
+        content_type = resp.headers.get('Content-Type', 'application/octet-stream')
+        print(Colors.cyan(f"  Status       : {resp.status_code}"))
+        print(Colors.cyan(f"  Content-Type : {content_type}"))
+        print(Colors.cyan(f"  Server       : {resp.headers.get('Server', 'unknown')}"))
+        print(Colors.cyan(f"  Content-Length: {resp.headers.get('Content-Length', 'unknown')}"))
 
-        ext_map = {'html': '.html', 'pdf': '.pdf', 'zip': '.zip', 'octet-stream': '.bin'}
+        ext_map = {
+            'html': '.html', 'pdf': '.pdf', 'zip': '.zip',
+            'octet-stream': '.bin', 'msword': '.doc',
+            'vnd.openxmlformats': '.docx', 'javascript': '.js',
+            'x-sh': '.sh', 'x-php': '.php', 'plain': '.txt',
+            'x-executable': '.bin', 'x-msdos-program': '.exe',
+        }
         ext = next((v for k, v in ext_map.items() if k in content_type.lower()), '.bin')
 
-        parsed = urlparse(url)
+        parsed = urlparse(resp.url)
         filename = Path(parsed.path).name or 'payload'
         filename = re.sub(r'[\\/*?:"<>|]', '_', filename)
-        if not filename.endswith(ext):
+        if not any(filename.endswith(e) for e in SUSPICIOUS_EXTS + ['.html', '.pdf', '.zip', '.bin', '.txt']):
             filename += ext
 
         save_path = save_dir / filename
-        with open(save_path, 'wb') as f:
+        total = 0
+        with open(save_path, 'wb') as fh:
             for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
-                    f.write(chunk)
+                    fh.write(chunk)
+                    total += len(chunk)
 
-        size = save_path.stat().st_size
-        print(Colors.green(f"  [+] Saved: {save_path}  ({size} bytes)"))
-        print(Colors.red("  [!] DO NOT execute outside a sandbox."))
+        print(Colors.green(f"\n  [+] Saved to: {save_path}  ({total:,} bytes)"))
+        print(Colors.red("  [!!!] DO NOT execute this file outside an isolated sandbox."))
 
         if susp := _is_suspicious_ext(str(save_path)):
-            print(Colors.red(f"  [!] Suspicious extension: {susp}"))
+            print(Colors.red(f"  [!] Suspicious extension detected: {susp}"))
 
         if 'html' in content_type.lower() or save_path.suffix == '.html':
+            print(Colors.yellow("  [*] HTML payload — scanning for embedded IOCs…"))
             with open(save_path, 'r', encoding='utf-8', errors='replace') as fh:
                 _scan_html_for_urls(fh.read(), str(save_path))
 
     except requests.exceptions.TooManyRedirects:
         print(Colors.red("  [!] Too many redirects."))
-    except requests.exceptions.SSLError:
-        print(Colors.red("  [!] SSL error."))
-    except requests.exceptions.ConnectionError:
-        print(Colors.red("  [!] Connection refused."))
+    except requests.exceptions.SSLError as e:
+        print(Colors.red(f"  [!] SSL error: {e}"))
+    except requests.exceptions.ConnectionError as e:
+        print(Colors.red(f"  [!] Connection refused: {e}"))
     except requests.exceptions.Timeout:
-        print(Colors.red("  [!] Timed out."))
+        print(Colors.red("  [!] Request timed out."))
     except Exception as e:
-        print(Colors.red(f"  [!] Failed: {e}"))
+        print(Colors.red(f"  [!] Download failed: {e}"))
 
 
-def expandURL(url):
-    load_dotenv()
-    TOKEN_EXPANDER = os.getenv("TOKEN_EXPANDER")
-    if not TOKEN_EXPANDER:
-        print(Colors.yellow("[!] TOKEN_EXPANDER not set in .env"))
-        sys.exit(1)
-    res = requests.post(
-        "https://onesimpleapi.com/api/unshorten",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN_EXPANDER}"},
-        json={"output": "json"}
-    )
-    return res.json() if res.ok else None
+# ── Per-URL interactive handler ───────────────────────────────────
+def _handle_found_url(url: str, label: str):
+    print(Colors.bold(f"\n  ┌─ [{label}]"))
+    print(Colors.red(f"  │  {url}"))
 
-
-def _handle_found_url(url, label):
-    print(Colors.red(f"\n  [{label}]"))
-    print(Colors.red(f"  {url}"))
-
-    is_short = next((s for s in URL_SHORTENERS_LIST if s in url), None)
-    if is_short:
-        print(Colors.yellow(f"  [!] URL shortener detected ({is_short})"))
-        if input(Colors.yellow("      Expand? (yes/no): ")).strip().lower() == 'yes':
-            expanded = expandURL(url)
-            if expanded:
-                print(Colors.cyan(f"      Expanded: {expanded}"))
-                url = expanded if isinstance(expanded, str) else url
+    short = _is_shortener(url)
+    if short:
+        print(Colors.yellow(f"  │  [!] URL shortener detected: {short}"))
+        expand_q = input(Colors.yellow("  │  Expand this short URL? (yes/no): ")).strip().lower()
+        if expand_q == 'yes':
+            expanded = expand_url(url)
+            if expanded and expanded != url:
+                print(Colors.cyan(f"  │  Expanded → {expanded}"))
+                url = expanded
+            else:
+                print(Colors.yellow("  │  Could not expand."))
 
     decoded = unquote(url)
     if decoded != url:
-        print(Colors.orange(f"  [!] URL-encoded — decoded: {decoded}"))
+        print(Colors.orange(f"  │  [!] URL-encoded — decoded: {decoded}"))
         url = decoded
 
     if susp := _is_suspicious_ext(url):
-        print(Colors.red(f"  [!] Suspicious extension: {susp}"))
+        print(Colors.red(f"  │  [!] Suspicious extension: {susp}"))
 
-    action = input(Colors.yellow("  [f]ollow redirects / [d]ownload payload / [s]kip: ")).strip().lower()
+    print(Colors.yellow("  └─ Action: [f]ollow redirects / [d]ownload payload / [s]kip: "), end='')
+    action = input().strip().lower()
     if action == 'f':
         _follow_redirect_chain(url)
     elif action == 'd':
         _download_payload(url)
+    else:
+        print(Colors.yellow("  [*] Skipped."))
 
 
-def javascript_ioc(file):
+# ── Main entry point ──────────────────────────────────────────────
+def javascript_ioc(file: str):
     eml_path = _resolve_eml(file)
 
     with open(eml_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -438,43 +519,66 @@ def javascript_ioc(file):
         print(Colors.red("[!] File is empty."))
         return
 
-    get_html = bs4.BeautifulSoup(content, 'html.parser')
-    all_redirect_urls = []
+    print(Colors.bold("\n╔══════════════════════════════════════════════════════════╗"))
+    print(Colors.bold("║           JAVASCRIPT / HTML IOC ANALYSIS                 ║"))
+    print(Colors.bold("╚══════════════════════════════════════════════════════════╝"))
 
-    for p in get_html.find_all('script'):
-        script_text = p.text.strip()
-        if not script_text:
+    soup = BeautifulSoup(content, 'html.parser')
+    collected: list[tuple[str, str]] = []
+    seen_keys: set[str] = set()
+
+    def _add(label: str, url: str):
+        k = _url_key(url)
+        if k not in seen_keys and len(url) > 8:
+            seen_keys.add(k)
+            collected.append((label, url))
+
+    # ── Per-script analysis ───────────────────────────────────────
+    for idx, script_tag in enumerate(soup.find_all('script'), start=1):
+        script_text = script_tag.get_text()
+        if not script_text.strip():
             continue
 
+        print(Colors.bold(f"\n[+] Script block #{idx}"))
+        print("─" * 60)
+
+        # atob() base64
         if 'atob(' in script_text:
-            print(Colors.orange("[!] atob() found — Base64 encoded content"))
-            for match in re.findall(r"atob\(['\"]([^'\"]+)['\"]\)", script_text):
+            print(Colors.orange("  [!] atob() found — Base64 encoded content:"))
+            for b64 in re.findall(r"atob\(['\"]([^'\"]+)['\"]\)", script_text):
                 try:
-                    decoded = base64.b64decode(match).decode('utf-8', errors='replace')
-                    print(Colors.yellow(f"[*] atob decoded: {decoded}"))
+                    decoded = base64.b64decode(b64 + '==').decode('utf-8', errors='replace')
+                    print(Colors.yellow(f"      {b64}"))
+                    print(Colors.cyan( f"    → {decoded}"))
                     if decoded.startswith('http'):
-                        all_redirect_urls.append(('atob() decoded URL', decoded))
+                        _add('atob() decoded URL', decoded)
                 except Exception:
                     pass
 
+        # eval()
         if 'eval(' in script_text:
-            print(Colors.red("[!] eval() found — possible code execution"))
+            print(Colors.red("  [!] eval() found — possible dynamic code execution"))
             m = re.search(r'eval\((.*?)\)', script_text, re.DOTALL)
             if m:
-                print(Colors.orange(f"    eval contents: {m.group(1)[:120]}"))
+                print(Colors.orange(f"      eval argument: {m.group(1)[:200]}"))
 
+        # String.fromCharCode
         if 'String.fromCharCode' in script_text:
-            print(Colors.orange("[!] String.fromCharCode() — char-code obfuscation"))
+            print(Colors.orange("  [!] String.fromCharCode() — character-code obfuscation"))
             for cc in re.findall(r'String\.fromCharCode\(([\d,\s]+)\)', script_text):
                 try:
-                    chars = ''.join(chr(int(c.strip())) for c in cc.split(',') if c.strip())
-                    print(Colors.yellow(f"    decoded: {chars}"))
+                    decoded = ''.join(chr(int(c.strip())) for c in cc.split(',') if c.strip())
+                    print(Colors.yellow(f"      decoded: {decoded[:200]}"))
+                    if decoded.startswith('http'):
+                        _add('fromCharCode decoded URL', decoded)
                 except Exception:
                     pass
 
+        # unescape / decodeURIComponent
         if 'unescape(' in script_text or 'decodeURIComponent(' in script_text:
-            print(Colors.orange("[!] unescape/decodeURIComponent — URL obfuscation"))
+            print(Colors.orange("  [!] unescape/decodeURIComponent — URL obfuscation"))
 
+        # setTimeout redirect
         if 'setTimeout' in script_text:
             m = re.search(
                 r'setTimeout\s*\(.*?(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']+)["\'].*?(\d+)\s*\)',
@@ -483,42 +587,57 @@ def javascript_ioc(file):
             if m:
                 redir_url = m.group(1)
                 delay     = int(m.group(2)) / 1000
-                print(Colors.orange(f"[!] setTimeout redirect after {delay}s -> {redir_url}"))
-                all_redirect_urls.append((f'setTimeout ({delay}s)', redir_url))
+                print(Colors.orange(f"  [!] setTimeout redirect after {delay}s → {redir_url}"))
+                _add(f'setTimeout ({delay}s)', redir_url)
 
-        for label, url in _collect_all_redirects(script_text, content, get_html):
-            if url not in [u for _, u in all_redirect_urls]:
-                all_redirect_urls.append((label, url))
+        # Collect everything else from this script + HTML context
+        # NOTE: called ONCE here per script block — NOT again after the loop
+        for lbl, url in _collect_all_redirects(script_text, content, soup):
+            _add(lbl, url)
 
-    for meta in get_html.find_all('meta'):
+    # ── Meta refresh (outside scripts) ───────────────────────────
+    print(Colors.bold("\n[+] Meta Tag Analysis"))
+    print("─" * 60)
+    found_meta = False
+    for meta in soup.find_all('meta'):
         if meta.get('http-equiv', '').lower() == 'refresh':
+            found_meta = True
             content_val = meta.get('content', '')
             url_m = re.search(r'url=([^\s;]+)', content_val, re.IGNORECASE)
             sec_m = re.search(r'^(\d+)', content_val)
             if url_m:
-                redir = _clean_url(url_m.group(1))
-                delay = sec_m.group(1) if sec_m else '?'
-                print(Colors.yellow(f"[*] Meta refresh -> {redir} (after {delay}s)"))
-                is_short = next((s for s in URL_SHORTENERS_LIST if s in redir), None)
-                if is_short:
-                    print(Colors.yellow(f"[*] Uses URL shortener ({is_short})"))
-                    if input("    Expand? (yes/no): ").strip().lower() == 'yes':
-                        print(expandURL(redir))
+                redir   = _clean_url(url_m.group(1))
+                delay   = sec_m.group(1) if sec_m else '?'
+                print(Colors.yellow(f"  [!] Meta refresh → {redir}  (after {delay}s)"))
+                short = _is_shortener(redir)
+                if short:
+                    print(Colors.yellow(f"  [!] URL shortener: {short}"))
+                _add(f'meta refresh ({delay}s)', redir)
+    if not found_meta:
+        print(Colors.green("  [✓] No meta refresh tags found."))
 
-    for label, url in _collect_all_redirects('', content, get_html):
-        if url not in [u for _, u in all_redirect_urls]:
-            all_redirect_urls.append((label, url))
+    # ── Anchor links and forms (HTML-level, outside script blocks) ─
+    # _collect_all_redirects already handled these when called per script above,
+    # but call it once more with EMPTY script text to catch anchors/forms that
+    # only appear in HTML with no script context — dedup via seen_keys prevents doubles
+    for lbl, url in _collect_all_redirects('', content, soup):
+        _add(lbl, url)
 
-    if all_redirect_urls:
-        print(Colors.bold(f"\n[+] === URLS / REDIRECTS FOUND — Total: {len(all_redirect_urls)} ==="))
+    # ── Summary table ─────────────────────────────────────────────
+    if collected:
+        print(Colors.bold(f"\n╔══════════════════════════════════════════════════════════╗"))
+        print(Colors.bold(f"║  URLS / REDIRECTS FOUND — {len(collected)} unique                        ║".replace(
+            "                        ║",
+            (" " * max(0, 40 - len(str(len(collected))))) + "║"
+        )))
+        print(Colors.bold(f"╚══════════════════════════════════════════════════════════╝"))
+        for lbl, url in collected:
+            print(Colors.orange(f"  [{lbl}]"))
+            print(Colors.red(  f"    {url}"))
+
+        print(Colors.yellow(f"\n[*] Review each URL interactively:"))
         print("─" * 60)
-        for label, url in all_redirect_urls:
-            print(Colors.orange(f"  [{label}]"))
-            print(Colors.red(f"    {url}"))
-        print("─" * 60)
-
-        print(Colors.yellow("\n[*] Review each URL:"))
-        for label, url in all_redirect_urls:
-            _handle_found_url(url, label)
+        for lbl, url in collected:
+            _handle_found_url(url, lbl)
     else:
-        print(Colors.green("[+] No URLs or redirects detected."))
+        print(Colors.green("\n[+] No URLs or redirects detected in this file."))
